@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PSX Portfolio & Dividend Intelligence",
+  title: "PSX Dividend & Portfolio Terminal — Rune Edition",
   description:
     "Real-Time Pakistan Stock Exchange (PSX) Portfolio, Weighted Average Cost (WAC) Accounting & Automated Dividend Announcement Monitor powered by Next.js & Supabase.",
 };
@@ -13,7 +13,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" data-theme="light" suppressHydrationWarning>
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
@@ -26,7 +26,9 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="antialiased">{children}</body>
+      <body className="antialiased selection:bg-indigo-500/30 selection:text-indigo-200">
+        {children}
+      </body>
     </html>
   );
 }

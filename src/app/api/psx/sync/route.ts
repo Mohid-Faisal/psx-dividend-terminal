@@ -16,10 +16,13 @@ export async function POST() {
 async function handleSync() {
   const startedAt = Date.now();
   try {
-    // 1. Fetch companies, transactions, and existing announcement IDs in ONE parallel roundtrip
-    const [compRes, txRes, annRes] = await Promise.all([
+    // 1. Fetch companies, transactions, dividends, and existing announcement IDs in ONE parallel roundtrip
+    const [compRes, txRes, divRes, annRes] = await Promise.all([
       supabase.from("psx_companies").select("ticker, name, frequency"),
       supabase.from("psx_transactions").select("ticker, action, shares"),
+      supabase
+        .from("psx_dividends")
+        .select("ticker, payment_date, status, dps, term, year"),
       supabase.from("psx_announcements").select("id, added_to_dividends"),
     ]);
 
@@ -31,19 +34,36 @@ async function handleSync() {
       );
     }
 
+    // Compute exact active shares per ticker (including MCB 225 legacy shares)
     const activeSharesMap = new Map<string, number>();
+    activeSharesMap.set("MCB", 225);
     for (const tx of txRes.data || []) {
       const cur = activeSharesMap.get(tx.ticker) || 0;
-      const sh = Number(tx.shares) || 0;
+      const sh = Math.abs(Number(tx.shares) || 0);
       activeSharesMap.set(
         tx.ticker,
         tx.action === "Buy" ? cur + sh : Math.max(0, cur - sh)
       );
     }
 
+    // Track tickers that already have an Unpaid dividend or a very recent dividend (within 35 days) in psx_dividends
+    const recentOrUnpaidDivTickers = new Set<string>();
+    for (const d of divRes.data || []) {
+      if (d.status === "Unpaid") {
+        recentOrUnpaidDivTickers.add(d.ticker);
+      } else if (d.payment_date) {
+        const diffDays =
+          (Date.now() - new Date(d.payment_date).getTime()) /
+          (1000 * 3600 * 24);
+        if (diffDays >= -10 && diffDays <= 35) {
+          recentOrUnpaidDivTickers.add(`${d.ticker}:${Number(d.dps)}`);
+        }
+      }
+    }
+
     const existingAnnSet = new Set((annRes.data || []).map((a) => a.id));
 
-    // 2. Scrape ALL 27 PSX companies in full parallel (takes ~1.2 - 1.8s total!)
+    // 2. Scrape ALL 27 PSX companies in full parallel
     const scrapedResults = await Promise.all(
       companies.map((c) => scrapePsxCompany(c.ticker))
     );
@@ -105,7 +125,7 @@ async function handleSync() {
       companyUpsertRows.push({
         ticker: res.ticker,
         name: meta?.name || res.name || res.ticker,
-        frequency: meta?.frequency || "Quarterly",
+        frequency: meta?.frequency || "Qtr",
         price: res.price,
         ldcp: res.ldcp,
         change: res.change,
@@ -119,13 +139,26 @@ async function handleSync() {
         updated_at: nowIso,
       });
 
-      const dividendAnns = res.announcements.filter((a) => a.isDividend);
+      // ONLY process announcements for stocks the user CURRENTLY HOLDS (activeShares > 0)!
+      const activeShares = activeSharesMap.get(res.ticker) || 0;
+      if (activeShares <= 0) continue;
+
+      const dividendAnns = res.announcements.filter(
+        (a) => a.isDividend && a.parsedDps !== null && a.parsedDps > 0
+      );
+
       for (const ann of dividendAnns) {
+        // Skip if this ticker already has an Unpaid dividend or matching recent dividend in psx_dividends
+        if (
+          recentOrUnpaidDivTickers.has(ann.ticker) ||
+          recentOrUnpaidDivTickers.has(`${ann.ticker}:${ann.parsedDps}`)
+        ) {
+          continue;
+        }
+
         if (!existingAnnSet.has(ann.id)) {
           existingAnnSet.add(ann.id);
-          const activeShares = activeSharesMap.get(ann.ticker) || 0;
-          const shouldAutoQueue =
-            activeShares > 0 && ann.parsedDps !== null && ann.parsedDps > 0;
+          recentOrUnpaidDivTickers.add(ann.ticker);
 
           newAnnUpsertRows.push({
             id: ann.id,
@@ -138,14 +171,14 @@ async function handleSync() {
             parsed_term: ann.parsedTerm,
             parsed_year: ann.parsedYear,
             notified: false,
-            added_to_dividends: shouldAutoQueue,
+            added_to_dividends: true,
           });
 
-          if (shouldAutoQueue && ann.parsedDps) {
+          if (ann.parsedDps) {
             const gross = activeShares * ann.parsedDps;
             const wht = Math.round(gross * 0.15);
             newDivInsertRows.push({
-              payment_date: "",
+              payment_date: new Date().toISOString().slice(0, 10),
               ticker: ann.ticker,
               year: ann.parsedYear,
               term: ann.parsedTerm,
@@ -165,7 +198,7 @@ async function handleSync() {
       }
     }
 
-    // 3. Single bulk DB write for all 27 companies + any new announcements!
+    // 3. Single bulk DB write for all 27 companies + any genuinely new relevant dividend announcements!
     const dbWrites: PromiseLike<unknown>[] = [];
     if (companyUpsertRows.length > 0) {
       dbWrites.push(
@@ -186,7 +219,6 @@ async function handleSync() {
     }
     await Promise.all(dbWrites);
 
-    // Return updated companies directly so client state updates in 0ms without re-fetching!
     const clientCompanies = companyUpsertRows.map((r) => ({
       ticker: r.ticker,
       name: r.name,

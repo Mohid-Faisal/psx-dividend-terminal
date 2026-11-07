@@ -36,6 +36,13 @@ function stripTags(html: string): string {
     .trim();
 }
 
+function isRecentAnnouncementDate(dateStr: string, maxDaysOld = 30): boolean {
+  const parsed = Date.parse(dateStr);
+  if (isNaN(parsed)) return false;
+  const diffDays = (Date.now() - parsed) / (1000 * 3600 * 24);
+  return diffDays >= -5 && diffDays <= maxDaysOld;
+}
+
 export function parseDividendFromAnnouncement(
   ticker: string,
   dateStr: string,
@@ -43,21 +50,35 @@ export function parseDividendFromAnnouncement(
   pdfUrl: string
 ): PsxAnnouncement {
   const lower = title.toLowerCase();
-  const isDividend =
-    lower.includes("dividend") ||
-    lower.includes("payout") ||
-    lower.includes("interim cash") ||
-    lower.includes("final cash") ||
+
+  // Exclude administrative/newspaper/unclaimed/IBAN noise notices
+  const isNoise =
+    lower.includes("clipping") ||
+    lower.includes("newspaper") ||
+    lower.includes("prior to publication") ||
+    lower.includes("non-availability") ||
+    lower.includes("withholding of cash dividend") ||
+    lower.includes("unclaimed") ||
+    lower.includes("mandatory requirement") ||
+    lower.includes("electronic mode") ||
+    !isRecentAnnouncementDate(dateStr, 30);
+
+  const hasDividendKeyword =
+    lower.includes("interim cash dividend") ||
+    lower.includes("final cash dividend") ||
+    lower.includes("declaration of interim dividend") ||
     lower.includes("cash distribution") ||
-    (lower.includes("book closure") && lower.includes("dividend")) ||
-    lower.includes("credit of") ||
-    lower.includes("dispatch of dividend");
+    (lower.includes("notice of") && lower.includes("dividend"));
 
   let parsedDps: number | null = null;
   const rsMatch = title.match(/Rs\.?\s*(\d+(?:\.\d+)?)/i);
   if (rsMatch) {
     parsedDps = parseFloat(rsMatch[1]);
   }
+
+  // Only mark as actionable dividend if it is NOT noise, has a real dividend keyword, AND has a parsed DPS > 0
+  const isDividend =
+    !isNoise && hasDividendKeyword && parsedDps !== null && parsedDps > 0;
 
   let parsedTerm = "Q1";
   if (
@@ -69,20 +90,29 @@ export function parseDividendFromAnnouncement(
   } else if (
     lower.includes("half year") ||
     lower.includes("second quarter") ||
-    lower.includes("2nd quarter")
+    lower.includes("2nd quarter") ||
+    lower.includes("2nd interim") ||
+    lower.includes("second interim")
   ) {
     parsedTerm = "HYR";
   } else if (
     lower.includes("third quarter") ||
     lower.includes("3rd quarter") ||
+    lower.includes("3rd interim") ||
+    lower.includes("third interim") ||
     lower.includes("nine months")
   ) {
-    parsedTerm = "Q3";
-  } else if (lower.includes("first quarter") || lower.includes("1st quarter")) {
-    parsedTerm = "Q1";
+    parsedTerm = "3Q";
+  } else if (
+    lower.includes("first quarter") ||
+    lower.includes("1st quarter") ||
+    lower.includes("1st interim") ||
+    lower.includes("first interim")
+  ) {
+    parsedTerm = "1Q";
   }
 
-  const yrMatch = title.match(/202[4-9]/);
+  const yrMatch = title.match(/202[5-9]/);
   const parsedYear = yrMatch ? yrMatch[0] : new Date().getFullYear().toString();
 
   const docMatch = pdfUrl.match(/(\d+)\.pdf/);
@@ -185,11 +215,11 @@ export async function scrapePsxCompany(
     const pe = peKey ? statsMap[peKey] : "N/A";
     const volume = volKey ? statsMap[volKey] : "0";
 
-    // Parse announcements section
+    // Parse announcements section (only keep actionable dividend announcements)
     const announcements: PsxAnnouncement[] = [];
     const annIdx = html.indexOf('id="announcements"');
     if (annIdx !== -1) {
-      const slice = html.slice(annIdx, annIdx + 30000);
+      const slice = html.slice(annIdx, annIdx + 25000);
       const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
       let rm: RegExpExecArray | null;
       while ((rm = rowRegex.exec(slice)) !== null) {
@@ -212,9 +242,15 @@ export async function scrapePsxCompany(
             titleText &&
             !dateText.toLowerCase().includes("date")
           ) {
-            announcements.push(
-              parseDividendFromAnnouncement(sym, dateText, titleText, pdfUrl)
+            const parsed = parseDividendFromAnnouncement(
+              sym,
+              dateText,
+              titleText,
+              pdfUrl
             );
+            if (parsed.isDividend) {
+              announcements.push(parsed);
+            }
           }
         }
       }
@@ -233,7 +269,7 @@ export async function scrapePsxCompany(
       dayRange,
       volume,
       asOf,
-      announcements: announcements.slice(0, 12),
+      announcements: announcements.slice(0, 5),
     };
   } catch {
     return null;
