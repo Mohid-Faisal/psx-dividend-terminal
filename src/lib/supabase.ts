@@ -12,3 +12,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: false,
   },
 });
+
+export function getSupabaseBrowserClient() {
+  return supabase;
+}

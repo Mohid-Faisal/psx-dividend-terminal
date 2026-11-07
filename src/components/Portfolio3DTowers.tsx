@@ -20,8 +20,8 @@ export default function Portfolio3DTowers({
     const container = mountRef.current;
     if (!container || positions.length === 0) return;
 
-    const width = container.clientWidth || 720;
-    const height = 340;
+    const width = container.clientWidth || 680;
+    const height = container.clientHeight || 340;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(40, width / height, 0.1, 1000);
@@ -41,19 +41,21 @@ export default function Portfolio3DTowers({
     dirLight.position.set(12, 24, 16);
     scene.add(dirLight);
 
-    const gridHelper = new THREE.GridHelper(26, 26, 0x334155, 0x1e293b);
+    const gridHelper = new THREE.GridHelper(28, 16, 0x334155, 0x1e293b);
     gridHelper.position.y = -0.05;
     scene.add(gridHelper);
 
     const group = new THREE.Group();
     scene.add(group);
 
-    const topPositions = positions.slice(0, 16);
+    const topPositions = [...positions]
+      .sort((a, b) => b.marketValue - a.marketValue)
+      .slice(0, 24);
     const maxVal = Math.max(...topPositions.map((p) => p.marketValue), 1);
 
-    const cols = 4;
-    const spacingX = 3.2;
-    const spacingZ = 2.8;
+    const cols = 6;
+    const spacingX = 2.9;
+    const spacingZ = 2.9;
     const meshes: THREE.Mesh[] = [];
 
     topPositions.forEach((pos, idx) => {
@@ -62,13 +64,13 @@ export default function Portfolio3DTowers({
       const x = (col - (cols - 1) / 2) * spacingX;
       const z = (row - 1.5) * spacingZ;
 
-      const h = Math.max(0.45, (pos.marketValue / maxVal) * 8.5);
+      const h = Math.max(0.55, (pos.marketValue / maxVal) * 8.8);
       const geom = new THREE.BoxGeometry(1.35, h, 1.35);
-      const isGain = pos.unrealizedPnl >= 0;
+      const isGain = pos.totalReturn >= 0;
       const mat = new THREE.MeshStandardMaterial({
         color: isGain ? 0x10b981 : 0xf43f5e,
-        roughness: 0.25,
-        metalness: 0.35,
+        roughness: 0.28,
+        metalness: 0.25,
       });
 
       const mesh = new THREE.Mesh(geom, mat);
@@ -77,22 +79,13 @@ export default function Portfolio3DTowers({
       group.add(mesh);
       meshes.push(mesh);
 
-      // Gold dividend cap proportional to net dividends paid
       if (pos.netDividendsPaid > 0) {
-        const divH = Math.max(0.18, (pos.netDividendsPaid / maxVal) * 4.5);
-        const divGeom = new THREE.BoxGeometry(1.38, divH, 1.38);
-        const divMat = new THREE.MeshStandardMaterial({
-          color: 0xf59e0b,
-          roughness: 0.2,
-          metalness: 0.6,
-          emissive: 0x78350f,
-          emissiveIntensity: 0.25,
-        });
-        const divMesh = new THREE.Mesh(divGeom, divMat);
-        divMesh.position.set(x, h + divH / 2 + 0.04, z);
-        divMesh.userData = { positionSummary: pos };
-        group.add(divMesh);
-        meshes.push(divMesh);
+        const ringGeom = new THREE.TorusGeometry(0.95, 0.06, 10, 28);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+        const ring = new THREE.Mesh(ringGeom, ringMat);
+        ring.rotation.x = Math.PI / 2;
+        ring.position.set(x, h + 0.3, z);
+        group.add(ring);
       }
     });
 
@@ -162,10 +155,11 @@ export default function Portfolio3DTowers({
 
     const handleResize = () => {
       if (!container) return;
-      const w = container.clientWidth || 720;
-      camera.aspect = w / height;
+      const w = container.clientWidth || 680;
+      const h = container.clientHeight || 340;
+      camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      renderer.setSize(w, height);
+      renderer.setSize(w, h);
     };
     window.addEventListener("resize", handleResize);
 
@@ -181,95 +175,39 @@ export default function Portfolio3DTowers({
   }, [positions, onSelectTicker]);
 
   return (
-    <div className="rune-card p-5 relative overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <div>
-          <span className="text-[11px] uppercase tracking-widest text-indigo-400 font-semibold">
-            WebGL 3D Spatial Telemetry
-          </span>
-          <h3 className="text-base font-semibold mt-0.5">
-            3D Portfolio Capital &amp; Dividend Yield Towers (Top 16 Holdings)
-          </h3>
-        </div>
-        {/* Visual Legend */}
-        <div className="flex flex-wrap items-center gap-3 text-xs">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
-            <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" />
-            Unrealized Gain Tower
-          </span>
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-300">
-            <span className="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block" />
-            Unrealized Drawdown Tower
-          </span>
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300">
-            <span className="w-2.5 h-2.5 rounded-sm bg-amber-400 inline-block" />
-            Gold Cap = Net Dividends Collected
-          </span>
-        </div>
-      </div>
-
-      <div
-        ref={mountRef}
-        className="w-full h-[340px] rounded-xl bg-black/30 border border-white/5 relative"
-      />
-
-      {hovered ? (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-4 px-4 py-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="font-mono-num font-bold text-indigo-300 text-sm">
-              {hovered.ticker}
-            </span>
-            <span className="text-slate-300">{hovered.name}</span>
-            <span className="px-2 py-0.5 rounded bg-white/10 text-slate-300">
-              {hovered.shares.toLocaleString()} sh
-            </span>
+    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+      <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
+      {hovered && (
+        <div
+          style={{
+            position: "absolute",
+            top: "12px",
+            left: "12px",
+            background: "rgba(15, 23, 42, 0.94)",
+            border: "1px solid #38bdf8",
+            padding: "8px 12px",
+            borderRadius: "6px",
+            color: "#ffffff",
+            fontSize: "12px",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          <div className="fw-700" style={{ color: "#38bdf8" }}>
+            {hovered.ticker} — {hovered.name}
           </div>
-          <div className="flex flex-wrap items-center gap-4 font-mono-num">
-            <span>
-              Mkt Value:{" "}
-              <strong className="text-white">
-                Rs.{" "}
-                {hovered.marketValue.toLocaleString("en-PK", {
-                  maximumFractionDigits: 0,
-                })}
-              </strong>
-            </span>
-            <span>
-              Unrealized P&amp;L:{" "}
-              <strong
-                className={
-                  hovered.unrealizedPnl >= 0
-                    ? "text-emerald-400"
-                    : "text-rose-400"
-                }
-              >
-                Rs.{" "}
-                {hovered.unrealizedPnl.toLocaleString("en-PK", {
-                  maximumFractionDigits: 0,
-                })}{" "}
-                ({hovered.unrealizedPnlPct.toFixed(1)}%)
-              </strong>
-            </span>
-            <span>
-              Net Divs:{" "}
-              <strong className="text-amber-300">
-                Rs.{" "}
-                {hovered.netDividendsPaid.toLocaleString("en-PK", {
-                  maximumFractionDigits: 0,
-                })}
-              </strong>
-            </span>
+          <div className="mono">
+            Value: Rs. {Math.round(hovered.marketValue).toLocaleString()}
           </div>
-        </div>
-      ) : (
-        <div className="mt-3 text-xs text-slate-400 flex items-center justify-between">
-          <span>
-            Drag horizontally to orbit 360° • Hover any tower to inspect capital
-            &amp; dividend cap • Click tower to open deep-dive
-          </span>
-          <span className="font-mono-num text-slate-500">
-            Height = Market Value (PKR)
-          </span>
+          <div
+            className="mono"
+            style={{
+              color: hovered.totalReturn >= 0 ? "#34d399" : "#fb7185",
+            }}
+          >
+            Total Return: {hovered.totalReturn >= 0 ? "+" : "-"}Rs.{" "}
+            {Math.round(Math.abs(hovered.totalReturn)).toLocaleString()}
+          </div>
         </div>
       )}
     </div>

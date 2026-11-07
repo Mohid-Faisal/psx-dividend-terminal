@@ -1,1832 +1,3196 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
+import seedPortfolioData from "@/data/seed-portfolio.json";
 import {
-  fetchPortfolioFromSupabase,
-  forceReseedSupabase,
-} from "@/lib/db-service";
-import {
-  computeBrokerageAndSst,
-  computePortfolioAnalytics,
-  LEGACY_MCB_SALE,
-} from "@/lib/accounting";
-import seedData from "@/data/seed-portfolio.json";
-import {
-  Dividend,
+  CompanyRecord,
+  DividendRecord,
   PortfolioState,
   PsxAnnouncement,
+  TransactionRecord,
 } from "@/types/portfolio";
-import Portfolio3DTowers from "@/components/Portfolio3DTowers";
 import {
-  MonthlyDividendChart,
-  SectorAllocationCard,
-  StockLeaderboardChart,
-} from "@/components/PortfolioCharts";
-import StockDetailModal from "@/components/StockDetailModal";
-import {
-  Activity,
-  Award,
-  Bell,
-  Building2,
-  CheckCircle2,
-  Cloud,
-  Download,
-  ExternalLink,
-  Filter,
-  Layers,
-  Moon,
-  Plus,
-  RefreshCw,
-  Search,
-  Sparkles,
-  Sun,
-  Trash2,
-  TrendingDown,
-  TrendingUp,
-  Wallet,
-} from "lucide-react";
+  computeBrokerageAndSst,
+  getSectorColor,
+  HoldingRecord,
+  runAccountingEngine,
+} from "@/lib/accounting";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
+import { fetchPortfolioFromSupabase } from "@/lib/db-service";
+
+const Portfolio3DTowers = dynamic(
+  () => import("@/components/Portfolio3DTowers"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="canvas-3d-wrap flex items-center justify-center text-slate-300 font-mono text-xs">
+        Loading Interactive 3D Portfolio Scene...
+      </div>
+    ),
+  }
+);
 
 type TabId =
-  | "dashboard"
+  | "overview"
   | "holdings"
   | "transactions"
   | "dividends"
-  | "companies";
+  | "monthly"
+  | "research";
 
-export default function HomePage() {
-  const [state, setState] = useState<PortfolioState>(
-    seedData as unknown as PortfolioState
+function fmtPKR(val: number, decimals = 0): string {
+  const num = Number(val) || 0;
+  return (
+    "Rs. " +
+    num.toLocaleString("en-PK", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    })
   );
-  const [activeTab, setActiveTab] = useState<TabId>("dashboard");
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [isLoadingDb, setIsLoadingDb] = useState<boolean>(true);
-  const [isSyncingPsx, setIsSyncingPsx] = useState<boolean>(false);
-  const [realtimeStatus, setRealtimeStatus] = useState<string>("CONNECTING");
-  const [lastSyncMsg, setLastSyncMsg] = useState<string>(
-    "Live Supabase Cloud Active"
-  );
-  const [toastAlert, setToastAlert] = useState<{
-    title: string;
-    subtitle: string;
-  } | null>(null);
+}
 
-  // Filters & Modals
-  const [selectedSector, setSelectedSector] = useState<string>("ALL");
-  const [holdingSearch, setHoldingSearch] = useState<string>("");
-  const [txSearch, setTxSearch] = useState<string>("");
-  const [txActionFilter, setTxActionFilter] = useState<string>("ALL");
-  const [divStatusFilter, setDivStatusFilter] = useState<string>("ALL");
-  const [divSearch, setDivSearch] = useState<string>("");
-  const [modalTicker, setModalTicker] = useState<string | null>(null);
-
-  // Mark-Paid Modal State
-  const [markPaidModalDiv, setMarkPaidModalDiv] = useState<Dividend | null>(
-    null
+function fmtSignedPKR(val: number, decimals = 0): string {
+  const num = Number(val) || 0;
+  const sign = num > 0 ? "+" : num < 0 ? "-" : "";
+  return (
+    sign +
+    "Rs. " +
+    Math.abs(num).toLocaleString("en-PK", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    })
   );
-  const [markPaidDate, setMarkPaidDate] = useState<string>(
+}
+
+function fmtNum(val: number, decimals = 0): string {
+  return (Number(val) || 0).toLocaleString("en-PK", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+export default function PsxPortfolioTerminalPage() {
+  const [state, setState] = useState<PortfolioState>(() => {
+    const raw = seedPortfolioData as unknown as PortfolioState;
+    return {
+      companies: raw.companies || [],
+      transactions: raw.transactions || [],
+      dividends: raw.dividends || [],
+      settings: raw.settings || {
+        includeLegacyMcbInCashflow: true,
+        defaultBrokerageRate: 0.0017,
+        defaultMinBrkPerShare: 0.05,
+        defaultSstRate: 0.15,
+      },
+      lastUpdated: raw.lastUpdated || new Date().toISOString(),
+    };
+  });
+
+  const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [cloudSynced, setCloudSynced] = useState<boolean>(false);
+  const [syncingPsx, setSyncingPsx] = useState<boolean>(false);
+  const [lastSyncTime, setLastSyncTime] = useState<string>("");
+  const [announcements, setAnnouncements] = useState<PsxAnnouncement[]>([]);
+  const [toastBanner, setToastBanner] = useState<string | null>(null);
+
+  // Filters & Sorting
+  const [sectorSortMetric, setSectorSortMetric] = useState<
+    "marketValue" | "activeCostBasis" | "netDivPaid" | "totalReturn"
+  >("marketValue");
+  const [holdingsSearch, setHoldingsSearch] = useState("");
+  const [holdingsSectorFilter, setHoldingsSectorFilter] = useState("ALL");
+  const [holdingsStatusFilter, setHoldingsStatusFilter] = useState<
+    "ACTIVE" | "ALL" | "CLOSED"
+  >("ACTIVE");
+  const [holdingsSort, setHoldingsSort] = useState<{
+    col: keyof HoldingRecord;
+    asc: boolean;
+  }>({ col: "marketValue", asc: false });
+
+  const [txSearch, setTxSearch] = useState("");
+  const [txActionFilter, setTxActionFilter] = useState<"ALL" | "Buy" | "Sell">(
+    "ALL"
+  );
+  const [txMonthFilter, setTxMonthFilter] = useState("ALL");
+
+  const [divSearch, setDivSearch] = useState("");
+  const [divStatusFilter, setDivStatusFilter] = useState<
+    "ALL" | "Paid" | "Unpaid"
+  >("ALL");
+  const [divReinvFilter, setDivReinvFilter] = useState<"ALL" | "Yes" | "No">(
+    "ALL"
+  );
+
+  // Research tab state
+  const [researchTicker, setResearchTicker] = useState("HUBC");
+  const [researchChartMode, setResearchChartMode] = useState<"custom" | "psx">(
+    "custom"
+  );
+
+  // Popup Modal 1: Add / Edit Buy or Sell Transaction
+  const [txModalOpen, setTxModalOpen] = useState(false);
+  const [txEditId, setTxEditId] = useState<number | null>(null);
+  const [txDate, setTxDate] = useState(() =>
     new Date().toISOString().slice(0, 10)
   );
-
-  // New Transaction Form
-  const [txDate, setTxDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
-  );
-  const [txTicker, setTxTicker] = useState<string>("FFC");
+  const [txTicker, setTxTicker] = useState("HUBC");
   const [txAction, setTxAction] = useState<"Buy" | "Sell">("Buy");
-  const [txShares, setTxShares] = useState<string>("100");
-  const [txPrice, setTxPrice] = useState<string>("562.62");
-  const [txBrk, setTxBrk] = useState<string>("84.39");
-  const [txSst, setTxSst] = useState<string>("12.66");
-  const [txNotes, setTxNotes] = useState<string>("");
+  const [txNotes, setTxNotes] = useState("");
+  const [txShares, setTxShares] = useState("");
+  const [txPrice, setTxPrice] = useState("");
+  const [txBrk, setTxBrk] = useState("0");
+  const [txSst, setTxSst] = useState("0");
+  const [txSaving, setTxSaving] = useState(false);
 
-  // New Dividend Form
-  const [divTicker, setDivTicker] = useState<string>("FFC");
-  const [divStatus, setDivStatus] = useState<"Paid" | "Unpaid">("Unpaid");
-  const [divPayDate, setDivPayDate] = useState<string>(
+  // Popup Modal 2: Add / Edit Dividend
+  const [divModalOpen, setDivModalOpen] = useState(false);
+  const [divEditId, setDivEditId] = useState<number | null>(null);
+  const [divDate, setDivDate] = useState(() =>
     new Date().toISOString().slice(0, 10)
   );
-  const [divYear, setDivYear] = useState<string>("2026");
-  const [divTerm, setDivTerm] = useState<string>("Q1");
-  const [divShares, setDivShares] = useState<string>("20");
-  const [divDps, setDivDps] = useState<string>("8.50");
-  const [divWht, setDivWht] = useState<string>("26");
-  const [divZakat, setDivZakat] = useState<string>("0");
+  const [divTicker, setDivTicker] = useState("HUBC");
+  const [divYear, setDivYear] = useState("2026");
+  const [divTerm, setDivTerm] = useState("Interim I");
+  const [divShares, setDivShares] = useState("");
+  const [divDps, setDivDps] = useState("");
+  const [divWht, setDivWht] = useState("0");
+  const [divZakat, setDivZakat] = useState("0");
+  const [divStatus, setDivStatus] = useState<"Paid" | "Unpaid">("Paid");
+  const [divReinvest, setDivReinvest] = useState<"Yes" | "No">("No");
+  const [divSaving, setDivSaving] = useState(false);
 
-  // New Company Form
-  const [newCompTicker, setNewCompTicker] = useState<string>("");
-  const [newCompName, setNewCompName] = useState<string>("");
-  const [newCompFreq, setNewCompFreq] = useState<string>("Quarterly");
-  const [isAddingCompany, setIsAddingCompany] = useState<boolean>(false);
+  // Popup Modal 3: Add New PSX Company
+  const [compModalOpen, setCompModalOpen] = useState(false);
+  const [compTicker, setCompTicker] = useState("");
+  const [compFreq, setCompFreq] = useState("Qtr");
+  const [compName, setCompName] = useState("");
+  const [compSector, setCompSector] = useState("COMMERCIAL BANKS");
+  const [compPrice, setCompPrice] = useState("0");
+  const [compFetching, setCompFetching] = useState(false);
 
-  // Load saved theme preference
+  // Popup Modal 4: Mark Dividend Paid & Set Payment Date
+  const [markPaidModalDiv, setMarkPaidModalDiv] =
+    useState<DividendRecord | null>(null);
+  const [markPaidDate, setMarkPaidDate] = useState(() =>
+    new Date().toISOString().slice(0, 10)
+  );
+
+  // Theme initialization (Defaults to crisp Light Mode like before)
   useEffect(() => {
-    const saved = window.localStorage.getItem("psx_rune_theme") as
-      | "dark"
+    const saved = localStorage.getItem("psx_theme_v5") as
       | "light"
+      | "dark"
       | null;
-    if (saved === "light" || saved === "dark") {
-      setTheme(saved);
-      document.documentElement.setAttribute("data-theme", saved);
-    }
+    const initial = saved === "dark" ? "dark" : "light";
+    setTheme(initial);
+    document.documentElement.setAttribute("data-theme", initial);
   }, []);
 
-  const handleToggleTheme = () => {
-    const next = theme === "dark" ? "light" : "dark";
+  const toggleTheme = () => {
+    const next = theme === "light" ? "dark" : "light";
     setTheme(next);
     document.documentElement.setAttribute("data-theme", next);
-    window.localStorage.setItem("psx_rune_theme", next);
+    localStorage.setItem("psx_theme_v5", next);
   };
 
-  // Load from Supabase
-  const reloadFromSupabase = useCallback(async () => {
+  // Run Zero-Bug Accounting Engine
+  const computed = useMemo(() => runAccountingEngine(state), [state]);
+
+  // Fetch initial portfolio from Supabase
+  const fetchPortfolioFromCloud = useCallback(async () => {
     try {
-      const fresh = await fetchPortfolioFromSupabase();
-      setState(fresh);
+      const data = await fetchPortfolioFromSupabase();
+      if (data?.companies?.length) {
+        setState({
+          companies: data.companies,
+          transactions: data.transactions || [],
+          dividends: data.dividends || [],
+          announcements: data.announcements || [],
+          settings: data.settings || {
+            includeLegacyMcbInCashflow: true,
+            defaultBrokerageRate: 0.0017,
+            defaultMinBrkPerShare: 0.05,
+            defaultSstRate: 0.15,
+          },
+          lastUpdated: data.lastUpdated || new Date().toISOString(),
+        });
+        if (Array.isArray(data.announcements)) {
+          setAnnouncements(data.announcements);
+        }
+        setCloudSynced(true);
+      }
     } catch (err) {
-      console.error("Failed loading from Supabase:", err);
-    } finally {
-      setIsLoadingDb(false);
+      console.error("Error fetching cloud portfolio:", err);
     }
   }, []);
 
-  // Fast Parallel Server-Side PSX Live Price & Dividend Announcement Sync
-  const syncLivePsxQuotes = useCallback(
+  // Sync live PSX prices + scan PSX dividend announcements
+  const syncLivePsxPricesAndDividends = useCallback(
     async (silent = false) => {
-      if (!silent) setIsSyncingPsx(true);
+      if (syncingPsx) return;
+      setSyncingPsx(true);
       try {
-        const res = await fetch("/api/psx/sync", { method: "POST" });
-        const json = await res.json();
-        if (json.ok) {
-          // Immediately apply returned live company prices in 0ms!
-          if (Array.isArray(json.companies) && json.companies.length > 0) {
+        const res = await fetch("/api/psx/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.companies) && data.companies.length > 0) {
             setState((prev) => ({
               ...prev,
-              companies: json.companies,
-              lastUpdated: json.syncedAt || new Date().toISOString(),
+              companies: data.companies,
+              lastUpdated: new Date().toISOString(),
             }));
           }
-          const newAnns = json.newDividendAnnouncements || [];
-          if (newAnns.length > 0) {
-            await reloadFromSupabase();
-            setToastAlert({
-              title: `${newAnns.length} New PSX Dividend Notice${
-                newAnns.length > 1 ? "s" : ""
-              } Detected!`,
-              subtitle: `${newAnns
-                .map((a: { ticker: string }) => a.ticker)
-                .join(", ")} announced a payout notice on PSX.`,
-            });
-          }
-          const sec = json.durationMs
-            ? `${(json.durationMs / 1000).toFixed(1)}s`
-            : "instant";
-          setLastSyncMsg(
-            `Live PSX Synced (${json.updatedCount} tickers in ${sec})`
+          setLastSyncTime(
+            new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
           );
-          if (!silent) {
-            setToastAlert({
-              title: `Live PSX Prices Updated (${json.updatedCount} Stocks in ${sec})`,
-              subtitle:
-                "All live quotes and corporate dividend notices are up to date.",
-            });
+          const newAnns = Array.isArray(data.newDividendAnnouncements)
+            ? data.newDividendAnnouncements
+            : [];
+          if (newAnns.length > 0) {
+            await fetchPortfolioFromCloud();
+            setToastBanner(
+              `🔔 PSX Dividend Monitor: ${newAnns.length} new dividend announcement(s) detected and queued as Unpaid!`
+            );
+          } else if (!silent) {
+            setToastBanner(
+              `✓ Synced live PSX prices for ${data.updatedCount || 27} stocks in ${((data.durationMs || 4000) / 1000).toFixed(1)}s`
+            );
           }
         }
       } catch (e) {
-        console.error("PSX sync error:", e);
+        console.error("PSX live sync failed:", e);
       } finally {
-        setIsSyncingPsx(false);
+        setSyncingPsx(false);
       }
     },
-    [reloadFromSupabase]
+    [syncingPsx, fetchPortfolioFromCloud]
   );
 
-  // Initial load + Realtime subscription + 60s Live Price Auto-Refresh
+  const didInitRef = useRef(false);
   useEffect(() => {
-    reloadFromSupabase().then(() => {
-      syncLivePsxQuotes(true);
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+    fetchPortfolioFromCloud().then(() => {
+      syncLivePsxPricesAndDividends(true);
     });
+  }, [fetchPortfolioFromCloud, syncLivePsxPricesAndDividends]);
 
-    const pollInterval = setInterval(() => {
-      syncLivePsxQuotes(true);
-    }, 60000);
+  // Subscribe to Supabase Realtime so any Add, Edit, or Delete on either laptop or phone syncs immediately
+  useEffect(() => {
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
 
     const channel = supabase
       .channel("psx-realtime-sync")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "psx_companies" },
-        () => reloadFromSupabase()
-      )
-      .on(
-        "postgres_changes",
         { event: "*", schema: "public", table: "psx_transactions" },
-        () => reloadFromSupabase()
+        () => fetchPortfolioFromCloud()
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "psx_dividends" },
-        () => reloadFromSupabase()
+        () => fetchPortfolioFromCloud()
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "psx_announcements" },
-        () => reloadFromSupabase()
+        { event: "*", schema: "public", table: "psx_companies" },
+        () => fetchPortfolioFromCloud()
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "psx_settings" },
-        () => reloadFromSupabase()
+        () => fetchPortfolioFromCloud()
       )
       .subscribe((status) => {
-        setRealtimeStatus(status);
+        if (status === "SUBSCRIBED") {
+          setCloudSynced(true);
+        }
       });
 
     return () => {
-      clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
-  }, [reloadFromSupabase, syncLivePsxQuotes]);
+  }, [fetchPortfolioFromCloud]);
 
-  // Analytics computation
-  const analytics = useMemo(() => computePortfolioAnalytics(state), [state]);
+  // Sorted tickers for dropdowns
+  const sortedTickers = useMemo(
+    () =>
+      [...computed.holdings].sort((a, b) => a.ticker.localeCompare(b.ticker)),
+    [computed.holdings]
+  );
 
-  // Auto-recompute brokerage & SST when shares or price changes in Trade form
-  useEffect(() => {
-    const sh = parseFloat(txShares) || 0;
-    const pr = parseFloat(txPrice) || 0;
-    const { brkFees, sst } = computeBrokerageAndSst(sh, pr);
-    setTxBrk(brkFees.toFixed(2));
-    setTxSst(sst.toFixed(2));
-  }, [txShares, txPrice]);
-
-  const handleSelectTxTicker = (sym: string) => {
-    setTxTicker(sym);
-    const comp = state.companies.find((c) => c.ticker === sym);
-    if (comp && comp.price > 0) {
-      setTxPrice(comp.price.toString());
-    }
+  // OpenStockResearch helper
+  const openStockResearch = (ticker: string) => {
+    setResearchTicker(ticker);
+    setActiveTab("research");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const handleSelectDivTicker = (sym: string) => {
-    setDivTicker(sym);
-    const pos = analytics.positions.find((p) => p.ticker === sym);
-    const sh = pos ? pos.shares : 0;
-    setDivShares(sh.toString());
-    const dpsVal = parseFloat(divDps) || 0;
-    setDivWht(Math.round(sh * dpsVal * 0.15).toString());
-  };
-
-  useEffect(() => {
-    const sh = parseFloat(divShares) || 0;
-    const dpsVal = parseFloat(divDps) || 0;
-    setDivWht(Math.round(sh * dpsVal * 0.15).toString());
-  }, [divShares, divDps]);
-
-  const handleToggleLegacyMcb = async () => {
-    const nextVal = !state.settings.includeLegacyMcbInCashflow;
-    setState((prev) => ({
-      ...prev,
-      settings: { ...prev.settings, includeLegacyMcbInCashflow: nextVal },
-    }));
-    await supabase
-      .from("psx_settings")
-      .update({
-        include_legacy_mcb_in_cashflow: nextVal,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", 1);
-  };
-
-  // Optimistic + Instant Supabase Insert for Transactions
-  const handleAddTransaction = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const shares = parseFloat(txShares) || 0;
-    const price = parseFloat(txPrice) || 0;
-    const brkFees = parseFloat(txBrk) || 0;
-    const sst = parseFloat(txSst) || 0;
-    if (!txTicker || shares <= 0 || price <= 0) return;
-
-    const comp = state.companies.find((c) => c.ticker === txTicker);
-    const companyName = comp ? comp.name : txTicker;
-
-    const { data, error } = await supabase
-      .from("psx_transactions")
-      .insert({
-        date: txDate,
-        ticker: txTicker,
-        company: companyName,
-        action: txAction,
-        shares,
-        price,
-        brk_fees: brkFees,
-        sst,
-        notes: txNotes.trim(),
-      })
-      .select()
-      .single();
-
-    if (!error && data) {
-      setTxNotes("");
-      setState((prev) => ({
-        ...prev,
-        transactions: [
-          ...prev.transactions,
-          {
-            id: Number(data.id),
-            date: data.date,
-            ticker: data.ticker,
-            company: data.company,
-            action: data.action,
-            shares: Number(data.shares),
-            price: Number(data.price),
-            brkFees: Number(data.brk_fees),
-            sst: Number(data.sst),
-            notes: data.notes || "",
-          },
-        ],
-      }));
-      setToastAlert({
-        title: `${txAction} Order Logged (${txTicker})`,
-        subtitle: `${shares} shares @ Rs. ${price.toFixed(
-          2
-        )} synced to Supabase across all devices.`,
-      });
-    }
-  };
-
-  // Instant Optimistic + Cloud Delete for Transactions
-  const handleDeleteTransaction = async (id: number, ticker: string) => {
-    setState((prev) => ({
-      ...prev,
-      transactions: prev.transactions.filter((t) => t.id !== id),
-    }));
-    const { error } = await supabase
-      .from("psx_transactions")
-      .delete()
-      .eq("id", id);
-    if (!error) {
-      setToastAlert({
-        title: `Transaction #${id} (${ticker}) Deleted`,
-        subtitle: "Removed permanently from Supabase cloud database.",
-      });
+  // =========================================================================
+  // MODAL 1: ADD / EDIT BUY OR SELL TRANSACTION
+  // =========================================================================
+  const openTxModal = (editId: number | null = null) => {
+    if (editId !== null) {
+      const t = state.transactions.find((x) => x.id === editId);
+      if (!t) return;
+      setTxEditId(editId);
+      setTxDate(t.date);
+      setTxTicker(t.ticker);
+      setTxAction(t.action);
+      setTxNotes(t.notes || "");
+      setTxShares(String(t.shares));
+      setTxPrice(String(t.price));
+      setTxBrk(String(t.brkFees));
+      setTxSst(String(t.sst));
     } else {
-      await reloadFromSupabase();
+      const defaultSym = "HUBC";
+      const liveP = computed.compMap[defaultSym]?.price || 0;
+      setTxEditId(null);
+      setTxDate(new Date().toISOString().slice(0, 10));
+      setTxTicker(defaultSym);
+      setTxAction("Buy");
+      setTxNotes("");
+      setTxShares("");
+      setTxPrice(liveP > 0 ? String(liveP) : "");
+      setTxBrk("0");
+      setTxSst("0");
+    }
+    setTxModalOpen(true);
+  };
+
+  const handleTxTickerChange = (newSym: string) => {
+    setTxTicker(newSym);
+    const liveP = computed.compMap[newSym]?.price || 0;
+    const priceStr = liveP > 0 ? String(liveP) : txPrice;
+    if (liveP > 0) setTxPrice(priceStr);
+    if (txEditId === null) {
+      const { brkFees, sst } = computeBrokerageAndSst(
+        Number(txShares) || 0,
+        Number(priceStr) || 0,
+        txNotes
+      );
+      setTxBrk(brkFees.toFixed(2));
+      setTxSst(sst.toFixed(2));
     }
   };
 
-  // Add Dividend
-  const handleAddDividend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const sharesEligible = parseFloat(divShares) || 0;
-    const dps = parseFloat(divDps) || 0;
-    const wht = parseFloat(divWht) || 0;
-    const zakat = parseFloat(divZakat) || 0;
-    if (!divTicker || sharesEligible <= 0 || dps <= 0) return;
-
-    const { data, error } = await supabase
-      .from("psx_dividends")
-      .insert({
-        payment_date: divStatus === "Paid" ? divPayDate : "",
-        ticker: divTicker,
-        year: divYear,
-        term: divTerm,
-        shares_eligible: sharesEligible,
-        status: divStatus,
-        announcement_date:
-          divStatus === "Unpaid" ? new Date().toISOString().slice(0, 10) : "",
-        expected_payment_date: divStatus === "Unpaid" ? divPayDate : "",
-        dps,
-        wht,
-        zakat,
-        reinvest: "No",
-        reinvest_price: 0,
-      })
-      .select()
-      .single();
-
-    if (!error && data) {
-      setState((prev) => ({
-        ...prev,
-        dividends: [
-          ...prev.dividends,
-          {
-            id: Number(data.id),
-            paymentDate: data.payment_date || "",
-            ticker: data.ticker,
-            year: data.year || "",
-            term: data.term || "Q1",
-            sharesEligible: Number(data.shares_eligible),
-            status: data.status,
-            announcementDate: data.announcement_date || "",
-            expectedPaymentDate: data.expected_payment_date || "",
-            dps: Number(data.dps),
-            wht: Number(data.wht),
-            zakat: Number(data.zakat),
-            reinvest: "No",
-            reinvestPrice: 0,
-          },
-        ],
-      }));
-      setToastAlert({
-        title: `Dividend Entry Added (${divTicker})`,
-        subtitle: `Status: ${divStatus} • DPS Rs. ${dps.toFixed(2)}`,
-      });
+  const handleTxSharesOrPriceOrNotesChange = (
+    newShares: string,
+    newPrice: string,
+    newNotes: string,
+    forceRecalc = false
+  ) => {
+    setTxShares(newShares);
+    setTxPrice(newPrice);
+    setTxNotes(newNotes);
+    if (txEditId === null || forceRecalc) {
+      const { brkFees, sst } = computeBrokerageAndSst(
+        Number(newShares) || 0,
+        Number(newPrice) || 0,
+        newNotes
+      );
+      setTxBrk(brkFees.toFixed(2));
+      setTxSst(sst.toFixed(2));
     }
   };
 
-  // Mark Unpaid Dividend as Paid with Payment Date
-  const handleConfirmMarkPaid = async () => {
-    if (!markPaidModalDiv) return;
-    const targetId = markPaidModalDiv.id;
-    const targetTicker = markPaidModalDiv.ticker;
+  const saveTxForm = async () => {
+    const shares = Math.abs(Number(txShares) || 0);
+    const price = Number(txPrice) || 0;
+    const brkFees = Number(txBrk) || 0;
+    const sst = Number(txSst) || 0;
+    const notes = txNotes.trim();
+
+    if (!txDate || !txTicker || shares <= 0 || price <= 0) {
+      alert("Please fill in Date, Ticker, Shares, and Price.");
+      return;
+    }
+
+    const company = computed.compMap[txTicker]?.name || txTicker;
+    setTxSaving(true);
+
+    try {
+      const supabase = getSupabaseBrowserClient();
+      if (txEditId !== null) {
+        // Optimistic update
+        setState((prev) => ({
+          ...prev,
+          transactions: prev.transactions.map((x) =>
+            x.id === txEditId
+              ? {
+                  id: txEditId,
+                  date: txDate,
+                  ticker: txTicker,
+                  company,
+                  action: txAction,
+                  shares,
+                  price,
+                  brkFees,
+                  sst,
+                  notes,
+                }
+              : x
+          ),
+        }));
+
+        if (supabase) {
+          const { error } = await supabase
+            .from("psx_transactions")
+            .update({
+              date: txDate,
+              ticker: txTicker,
+              company,
+              action: txAction,
+              shares,
+              price,
+              brk_fees: brkFees,
+              sst,
+              notes,
+            })
+            .eq("id", txEditId);
+          if (error) throw error;
+        }
+        setToastBanner(`✓ Updated ${txAction} transaction for ${txTicker}`);
+      } else {
+        const tempId =
+          state.transactions.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
+        const newRec: TransactionRecord = {
+          id: tempId,
+          date: txDate,
+          ticker: txTicker,
+          company,
+          action: txAction,
+          shares,
+          price,
+          brkFees,
+          sst,
+          notes,
+        };
+        setState((prev) => ({
+          ...prev,
+          transactions: [...prev.transactions, newRec],
+        }));
+
+        if (supabase) {
+          const { data, error } = await supabase
+            .from("psx_transactions")
+            .insert({
+              date: txDate,
+              ticker: txTicker,
+              company,
+              action: txAction,
+              shares,
+              price,
+              brk_fees: brkFees,
+              sst,
+              notes,
+            })
+            .select()
+            .single();
+          if (error) throw error;
+          if (data?.id) {
+            setState((prev) => ({
+              ...prev,
+              transactions: prev.transactions.map((x) =>
+                x.id === tempId ? { ...x, id: Number(data.id) } : x
+              ),
+            }));
+          }
+        }
+        setToastBanner(
+          `✓ Added ${txAction} (${shares} sh of ${txTicker}) — Synced to Cloud`
+        );
+      }
+      setTxModalOpen(false);
+    } catch (err) {
+      console.error("Failed to save transaction:", err);
+      alert("Error syncing transaction to cloud. Please try again.");
+    } finally {
+      setTxSaving(false);
+    }
+  };
+
+  const deleteTransaction = async (id: number) => {
+    if (
+      !window.confirm(
+        "Are you sure you want to delete this transaction? This deletion will sync immediately across all laptops and phones."
+      )
+    )
+      return;
+
     setState((prev) => ({
       ...prev,
-      dividends: prev.dividends.map((d) =>
-        d.id === targetId
-          ? { ...d, status: "Paid", paymentDate: markPaidDate }
-          : d
+      transactions: prev.transactions.filter((x) => x.id !== id),
+    }));
+
+    try {
+      const supabase = getSupabaseBrowserClient();
+      if (supabase) {
+        const { error } = await supabase
+          .from("psx_transactions")
+          .delete()
+          .eq("id", id);
+        if (error) throw error;
+      }
+      setToastBanner("✓ Transaction deleted across all synced devices");
+    } catch (err) {
+      console.error("Delete transaction error:", err);
+      fetchPortfolioFromCloud();
+    }
+  };
+
+  // =========================================================================
+  // MODAL 2: ADD / EDIT DIVIDEND
+  // =========================================================================
+  const calcEligibleSharesOnDate = useCallback(
+    (sym: string, dt: string) => {
+      const targetDate = dt || "9999-12-31";
+      let sh = sym === "MCB" ? 225 : 0;
+      state.transactions.forEach((t) => {
+        if (t.ticker === sym && t.date <= targetDate) {
+          sh += t.action === "Buy" ? Number(t.shares) : -Number(t.shares);
+        }
+      });
+      return Math.max(0, sh);
+    },
+    [state.transactions]
+  );
+
+  const openDivModal = (editId: number | null = null) => {
+    if (editId !== null) {
+      const d = state.dividends.find((x) => x.id === editId);
+      if (!d) return;
+      setDivEditId(editId);
+      setDivDate(d.paymentDate);
+      setDivTicker(d.ticker);
+      setDivYear(d.year);
+      setDivTerm(d.term);
+      setDivShares(String(d.sharesEligible));
+      setDivDps(String(d.dps));
+      setDivWht(String(d.wht));
+      setDivZakat(String(d.zakat || 0));
+      setDivStatus(d.status || "Paid");
+      setDivReinvest(d.reinvest || "No");
+    } else {
+      const defaultSym = "HUBC";
+      const today = new Date().toISOString().slice(0, 10);
+      const elig = calcEligibleSharesOnDate(defaultSym, today);
+      setDivEditId(null);
+      setDivDate(today);
+      setDivTicker(defaultSym);
+      setDivYear("2026");
+      setDivTerm("Interim I");
+      setDivShares(String(elig));
+      setDivDps("");
+      setDivWht("0");
+      setDivZakat("0");
+      setDivStatus("Paid");
+      setDivReinvest("No");
+    }
+    setDivModalOpen(true);
+  };
+
+  const applyDivWhtPreset = (ratePct: number) => {
+    const sh = Number(divShares) || 0;
+    const dps = Number(divDps) || 0;
+    setDivWht(String(Math.round(sh * dps * (ratePct / 100))));
+  };
+
+  const saveDivForm = async () => {
+    const sharesEligible = Number(divShares) || 0;
+    const dps = Number(divDps) || 0;
+    const wht = Number(divWht) || 0;
+    const zakat = Number(divZakat) || 0;
+
+    if (!divDate || !divTicker || sharesEligible <= 0 || dps <= 0) {
+      alert(
+        "Please fill in Date, Ticker, Eligible Shares, and Dividend per Share."
+      );
+      return;
+    }
+
+    setDivSaving(true);
+    try {
+      const supabase = getSupabaseBrowserClient();
+      if (divEditId !== null) {
+        setState((prev) => ({
+          ...prev,
+          dividends: prev.dividends.map((x) =>
+            x.id === divEditId
+              ? {
+                  ...x,
+                  id: divEditId,
+                  paymentDate: divDate,
+                  ticker: divTicker,
+                  year: divYear.trim(),
+                  term: divTerm,
+                  sharesEligible,
+                  status: divStatus,
+                  dps,
+                  wht,
+                  zakat,
+                  reinvest: divReinvest,
+                }
+              : x
+          ),
+        }));
+
+        if (supabase) {
+          const { error } = await supabase
+            .from("psx_dividends")
+            .update({
+              payment_date: divDate,
+              ticker: divTicker,
+              year: divYear.trim(),
+              term: divTerm,
+              shares_eligible: sharesEligible,
+              status: divStatus,
+              dps,
+              wht,
+              zakat,
+              reinvest: divReinvest,
+            })
+            .eq("id", divEditId);
+          if (error) throw error;
+        }
+        setToastBanner(`✓ Updated dividend record for ${divTicker}`);
+      } else {
+        const tempId =
+          state.dividends.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
+        const newDiv: DividendRecord = {
+          id: tempId,
+          paymentDate: divDate,
+          ticker: divTicker,
+          year: divYear.trim(),
+          term: divTerm,
+          sharesEligible,
+          status: divStatus,
+          dps,
+          wht,
+          zakat,
+          reinvest: divReinvest,
+          reinvestPrice: 0,
+        };
+        setState((prev) => ({
+          ...prev,
+          dividends: [...prev.dividends, newDiv],
+        }));
+
+        if (supabase) {
+          const { data, error } = await supabase
+            .from("psx_dividends")
+            .insert({
+              payment_date: divDate,
+              ticker: divTicker,
+              year: divYear.trim(),
+              term: divTerm,
+              shares_eligible: sharesEligible,
+              status: divStatus,
+              dps,
+              wht,
+              zakat,
+              reinvest: divReinvest,
+              reinvest_price: 0,
+            })
+            .select()
+            .single();
+          if (error) throw error;
+          if (data?.id) {
+            setState((prev) => ({
+              ...prev,
+              dividends: prev.dividends.map((x) =>
+                x.id === tempId ? { ...x, id: Number(data.id) } : x
+              ),
+            }));
+          }
+        }
+        setToastBanner(
+          `✓ Added ${divStatus} dividend for ${divTicker} — Synced to Cloud`
+        );
+      }
+      setDivModalOpen(false);
+    } catch (err) {
+      console.error("Failed to save dividend:", err);
+      alert("Error syncing dividend to cloud. Please try again.");
+    } finally {
+      setDivSaving(false);
+    }
+  };
+
+  const deleteDividend = async (id: number) => {
+    if (
+      !window.confirm(
+        "Are you sure you want to delete this dividend record? This deletion will sync immediately across all laptops and phones."
+      )
+    )
+      return;
+
+    setState((prev) => ({
+      ...prev,
+      dividends: prev.dividends.filter((x) => x.id !== id),
+    }));
+
+    try {
+      const supabase = getSupabaseBrowserClient();
+      if (supabase) {
+        const { error } = await supabase
+          .from("psx_dividends")
+          .delete()
+          .eq("id", id);
+        if (error) throw error;
+      }
+      setToastBanner("✓ Dividend record deleted across all synced devices");
+    } catch (err) {
+      console.error("Delete dividend error:", err);
+      fetchPortfolioFromCloud();
+    }
+  };
+
+  // Clicking Status pill: If Unpaid, open "Mark as Paid & Set Date" modal; if Paid, confirm toggle to Unpaid
+  const handleStatusPillClick = async (d: DividendRecord) => {
+    if (d.status === "Unpaid") {
+      setMarkPaidModalDiv(d);
+      setMarkPaidDate(
+        d.paymentDate || new Date().toISOString().slice(0, 10)
+      );
+    } else {
+      const nextStatus: "Paid" | "Unpaid" = "Unpaid";
+      setState((prev) => ({
+        ...prev,
+        dividends: prev.dividends.map((x) =>
+          x.id === d.id ? { ...x, status: nextStatus } : x
+        ),
+      }));
+      const supabase = getSupabaseBrowserClient();
+      if (supabase) {
+        await supabase
+          .from("psx_dividends")
+          .update({ status: nextStatus })
+          .eq("id", d.id);
+      }
+      setToastBanner(`Marked ${d.ticker} dividend as Unpaid`);
+    }
+  };
+
+  const confirmMarkDividendPaid = async () => {
+    if (!markPaidModalDiv) return;
+    const id = markPaidModalDiv.id;
+    const payDate = markPaidDate || new Date().toISOString().slice(0, 10);
+
+    setState((prev) => ({
+      ...prev,
+      dividends: prev.dividends.map((x) =>
+        x.id === id
+          ? { ...x, status: "Paid", paymentDate: payDate }
+          : x
       ),
     }));
-    setMarkPaidModalDiv(null);
 
-    await supabase
-      .from("psx_dividends")
-      .update({
-        status: "Paid",
-        payment_date: markPaidDate,
-      })
-      .eq("id", targetId);
-
-    setToastAlert({
-      title: `${targetTicker} Dividend Marked as PAID!`,
-      subtitle: `Credited on ${markPaidDate} and added to realized dividend cashflow.`,
-    });
+    try {
+      const supabase = getSupabaseBrowserClient();
+      if (supabase) {
+        await supabase
+          .from("psx_dividends")
+          .update({ status: "Paid", payment_date: payDate })
+          .eq("id", id);
+      }
+      setToastBanner(
+        `✓ Marked ${markPaidModalDiv.ticker} dividend as PAID on ${payDate}!`
+      );
+    } catch (err) {
+      console.error("Error marking dividend paid:", err);
+    } finally {
+      setMarkPaidModalDiv(null);
+    }
   };
 
-  // Delete Dividend
-  const handleDeleteDividend = async (id: number, ticker: string) => {
-    setState((prev) => ({
-      ...prev,
-      dividends: prev.dividends.filter((d) => d.id !== id),
-    }));
-    await supabase.from("psx_dividends").delete().eq("id", id);
-    setToastAlert({
-      title: `Dividend Entry (${ticker}) Deleted`,
-      subtitle: "Removed from Supabase cloud database.",
-    });
-  };
+  // Queue a detected PSX announcement into Unpaid Dividends with 1 click
+  const queueAnnouncementAsUnpaidDividend = async (ann: PsxAnnouncement) => {
+    const dps = ann.parsedDps || 0;
+    const payDate =
+      ann.announcementDate || new Date().toISOString().slice(0, 10);
+    const eligShares =
+      computed.compMap[ann.ticker]?.activeShares ||
+      calcEligibleSharesOnDate(ann.ticker, payDate);
+    if (eligShares <= 0 || dps <= 0) {
+      alert(
+        `Cannot auto-queue ${ann.ticker}: Held shares (${eligShares}) or DPS (${dps}) is 0.`
+      );
+      return;
+    }
+    const isIpp =
+      computed.compMap[ann.ticker]?.sector ===
+      "POWER GENERATION & DISTRIBUTION";
+    const whtRate = isIpp ? 0.075 : 0.15;
+    const gross = eligShares * dps;
+    const wht = Math.round(gross * whtRate);
 
-  // Queue PSX Announcement into Unpaid Dividends
-  const handleQueueAnnouncementToDividend = async (ann: PsxAnnouncement) => {
-    const pos = analytics.positions.find((p) => p.ticker === ann.ticker);
-    const eligibleShares = pos && pos.shares > 0 ? pos.shares : 100;
-    const dps = ann.parsedDps || 1.0;
-    const gross = eligibleShares * dps;
-    const wht = Math.round(gross * 0.15);
-
-    await supabase.from("psx_dividends").insert({
-      payment_date: "",
+    const tempId =
+      state.dividends.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1;
+    const newDiv: DividendRecord = {
+      id: tempId,
+      paymentDate: payDate,
       ticker: ann.ticker,
       year: ann.parsedYear || "2026",
-      term: ann.parsedTerm || "Q1",
-      shares_eligible: eligibleShares,
+      term: ann.parsedTerm || "Interim I",
+      sharesEligible: eligShares,
       status: "Unpaid",
-      announcement_date: ann.announcementDate,
-      expected_payment_date: "",
       dps,
       wht,
       zakat: 0,
       reinvest: "No",
-      reinvest_price: 0,
-      announcement_id: ann.id,
-    });
+      reinvestPrice: 0,
+      announcementId: ann.id,
+    };
 
-    await supabase
-      .from("psx_announcements")
-      .update({ added_to_dividends: true, notified: true })
-      .eq("id", ann.id);
+    setState((prev) => ({
+      ...prev,
+      dividends: [...prev.dividends, newDiv],
+    }));
 
-    await reloadFromSupabase();
-    setToastAlert({
-      title: `Queued ${ann.ticker} Announcement to Unpaid Dividends`,
-      subtitle: `${eligibleShares} eligible shares • Mark as Paid once credited to your bank.`,
-    });
+    const supabase = getSupabaseBrowserClient();
+    if (supabase) {
+      await supabase
+        .from("psx_announcements")
+        .update({ added_to_dividends: true })
+        .eq("id", ann.id);
+      const { data } = await supabase
+        .from("psx_dividends")
+        .insert({
+          payment_date: payDate,
+          ticker: ann.ticker,
+          year: ann.parsedYear || "2026",
+          term: ann.parsedTerm || "Interim I",
+          shares_eligible: eligShares,
+          status: "Unpaid",
+          dps,
+          wht,
+          zakat: 0,
+          reinvest: "No",
+          reinvest_price: 0,
+          announcement_id: ann.id,
+        })
+        .select()
+        .single();
+      if (data?.id) {
+        setState((prev) => ({
+          ...prev,
+          dividends: prev.dividends.map((x) =>
+            x.id === tempId ? { ...x, id: Number(data.id) } : x
+          ),
+        }));
+      }
+    }
+    setAnnouncements((prev) =>
+      prev.map((x) =>
+        x.id === ann.id ? { ...x, addedToDividends: true } : x
+      )
+    );
+    setToastBanner(
+      `✓ Added ${ann.ticker} (Rs. ${dps}/sh) to Unpaid Dividends Queue!`
+    );
   };
 
-  // Add New PSX Company & Auto-Fetch Live Price from PSX
-  const handleAddCompany = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const sym = newCompTicker.trim().toUpperCase();
+  // =========================================================================
+  // MODAL 3: ADD NEW PSX COMPANY
+  // =========================================================================
+  const autoFetchNewTickerInfo = async () => {
+    const sym = compTicker.trim().toUpperCase();
     if (!sym) return;
-    setIsAddingCompany(true);
+    setCompFetching(true);
     try {
-      const res = await fetch(
-        `/api/psx/company?ticker=${encodeURIComponent(sym)}`
-      );
-      const json = await res.json();
-      const scraped = json.ok ? json.company : null;
-
-      await supabase.from("psx_companies").upsert({
-        ticker: sym,
-        name: newCompName.trim() || scraped?.name || sym,
-        frequency: newCompFreq,
-        price: scraped?.price || 0,
-        ldcp: scraped?.ldcp || 0,
-        change: scraped?.change || 0,
-        change_pct: scraped?.changePct || 0,
-        sector: scraped?.sector || "OTHER",
-        pe: scraped?.pe || "N/A",
-        high52: scraped?.high52 || "N/A",
-        day_range: scraped?.dayRange || "N/A",
-        volume: scraped?.volume || "0",
-        as_of: scraped?.asOf || "Added Now",
-        updated_at: new Date().toISOString(),
-      });
-
-      setNewCompTicker("");
-      setNewCompName("");
-      await reloadFromSupabase();
-      setToastAlert({
-        title: `${sym} Added to PSX Directory`,
-        subtitle: scraped
-          ? `Fetched live PSX price: Rs. ${scraped.price.toFixed(2)} (${
-              scraped.sector
-            })`
-          : "Company saved to Supabase.",
-      });
+      const res = await fetch(`/api/psx/company?ticker=${sym}`);
+      if (res.ok) {
+        const q = await res.json();
+        if (q.name) setCompName(q.name);
+        if (q.sector) setCompSector(q.sector.toUpperCase());
+        if (q.price > 0) setCompPrice(String(q.price));
+      }
+    } catch (e) {
+      console.error("Failed to fetch PSX company info:", e);
     } finally {
-      setIsAddingCompany(false);
+      setCompFetching(false);
     }
   };
 
-  // Export JSON Backup
-  const handleExportJson = () => {
-    const blob = new Blob([JSON.stringify(state, null, 2)], {
-      type: "application/json",
+  const saveCompanyForm = async () => {
+    const ticker = compTicker.trim().toUpperCase();
+    const name = compName.trim() || ticker;
+    const price = Number(compPrice) || 0;
+    if (!ticker) {
+      alert("Please enter a PSX Ticker Symbol.");
+      return;
+    }
+
+    const newComp: CompanyRecord = {
+      ticker,
+      name,
+      frequency: compFreq,
+      sector: compSector,
+      price,
+      ldcp: price,
+      change: 0,
+      changePct: 0,
+      pe: "N/A",
+      high52: "",
+      dayRange: "",
+      volume: "0",
+      asOf: "Live PSX",
+    };
+
+    setState((prev) => {
+      const exists = prev.companies.some((c) => c.ticker === ticker);
+      return {
+        ...prev,
+        companies: exists
+          ? prev.companies.map((c) => (c.ticker === ticker ? newComp : c))
+          : [...prev.companies, newComp],
+      };
     });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `psx_portfolio_backup_${new Date()
-      .toISOString()
-      .slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+
+    const supabase = getSupabaseBrowserClient();
+    if (supabase) {
+      await supabase.from("psx_companies").upsert({
+        ticker,
+        name,
+        frequency: compFreq,
+        sector: compSector,
+        price,
+        ldcp: price,
+        change: 0,
+        change_pct: 0,
+        pe: "N/A",
+        high_52: "",
+        day_range: "",
+        volume: "0",
+        as_of: "Live PSX",
+      });
+    }
+
+    setCompModalOpen(false);
+    setToastBanner(`✓ Saved PSX ticker ${ticker} (${name})`);
+    syncLivePsxPricesAndDividends(true);
   };
 
-  const unpaidDividends = state.dividends.filter((d) => d.status === "Unpaid");
-  const selectedModalPosition = useMemo(
-    () =>
-      modalTicker
-        ? analytics.positions.find((p) => p.ticker === modalTicker) || null
-        : null,
-    [modalTicker, analytics.positions]
-  );
+  // Toggle Legacy MCB Sale Cashflow setting
+  const toggleMcbLegacySetting = async (checked: boolean) => {
+    setState((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        includeLegacyMcbInCashflow: checked,
+      },
+    }));
+    const supabase = getSupabaseBrowserClient();
+    if (supabase) {
+      await supabase
+        .from("psx_settings")
+        .update({ include_legacy_mcb_in_cashflow: checked })
+        .eq("id", 1);
+    }
+  };
+
+  // =========================================================================
+  // DERIVED TABLES & LISTS
+  // =========================================================================
+  const t = computed.totals;
+
+  const sectorBreakdownList = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        sector: string;
+        marketValue: number;
+        activeCostBasis: number;
+        netDivPaid: number;
+        totalReturn: number;
+        count: number;
+      }
+    > = {};
+    computed.holdings
+      .filter((h) => h.activeShares > 0)
+      .forEach((h) => {
+        const sec = h.sector || "OTHER";
+        if (!map[sec]) {
+          map[sec] = {
+            sector: sec,
+            marketValue: 0,
+            activeCostBasis: 0,
+            netDivPaid: 0,
+            totalReturn: 0,
+            count: 0,
+          };
+        }
+        map[sec].marketValue += h.marketValue;
+        map[sec].activeCostBasis += h.activeCostBasis;
+        map[sec].netDivPaid += h.netDivPaid;
+        map[sec].totalReturn += h.totalReturn;
+        map[sec].count += 1;
+      });
+    return Object.values(map).sort(
+      (a, b) => b[sectorSortMetric] - a[sectorSortMetric]
+    );
+  }, [computed.holdings, sectorSortMetric]);
 
   const filteredHoldings = useMemo(() => {
-    return analytics.activePositions.filter((p) => {
-      if (selectedSector !== "ALL" && p.sector !== selectedSector) return false;
-      if (holdingSearch.trim()) {
-        const q = holdingSearch.toLowerCase();
-        return (
-          p.ticker.toLowerCase().includes(q) ||
-          p.name.toLowerCase().includes(q) ||
-          p.sector.toLowerCase().includes(q)
-        );
-      }
-      return true;
-    });
-  }, [analytics.activePositions, selectedSector, holdingSearch]);
+    const q = holdingsSearch.toLowerCase().trim();
+    return computed.holdings
+      .filter((h) => {
+        if (holdingsStatusFilter === "ACTIVE" && h.activeShares <= 0)
+          return false;
+        if (holdingsStatusFilter === "CLOSED" && h.activeShares > 0)
+          return false;
+        if (
+          holdingsSectorFilter !== "ALL" &&
+          h.sector !== holdingsSectorFilter
+        )
+          return false;
+        if (
+          q &&
+          !`${h.ticker} ${h.name} ${h.sector}`.toLowerCase().includes(q)
+        )
+          return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const va = a[holdingsSort.col];
+        const vb = b[holdingsSort.col];
+        if (typeof va === "string" && typeof vb === "string") {
+          return holdingsSort.asc
+            ? va.localeCompare(vb)
+            : vb.localeCompare(va);
+        }
+        return holdingsSort.asc
+          ? Number(va) - Number(vb)
+          : Number(vb) - Number(va);
+      });
+  }, [
+    computed.holdings,
+    holdingsSearch,
+    holdingsSectorFilter,
+    holdingsStatusFilter,
+    holdingsSort,
+  ]);
+
+  const handleSortHoldings = (col: keyof HoldingRecord) => {
+    setHoldingsSort((prev) =>
+      prev.col === col
+        ? { col, asc: !prev.asc }
+        : {
+            col,
+            asc: col === "ticker" || col === "name" || col === "sector",
+          }
+    );
+  };
 
   const filteredTransactions = useMemo(() => {
-    return [...state.transactions]
-      .sort((a, b) => {
-        if (a.date !== b.date) return b.date.localeCompare(a.date);
-        return b.id - a.id;
-      })
-      .filter((t) => {
-        if (txActionFilter !== "ALL" && t.action !== txActionFilter)
-          return false;
-        if (txSearch.trim()) {
-          const q = txSearch.toLowerCase();
-          return (
-            t.ticker.toLowerCase().includes(q) ||
-            t.company.toLowerCase().includes(q)
-          );
-        }
-        return true;
-      });
-  }, [state.transactions, txActionFilter, txSearch]);
+    const q = txSearch.toLowerCase().trim();
+    return [...computed.transactions].reverse().filter((tx) => {
+      if (txActionFilter !== "ALL" && tx.action !== txActionFilter)
+        return false;
+      if (txMonthFilter !== "ALL" && tx.ym !== txMonthFilter) return false;
+      if (
+        q &&
+        !`${tx.ticker} ${tx.company} ${tx.notes || ""} ${tx.date}`
+          .toLowerCase()
+          .includes(q)
+      )
+        return false;
+      return true;
+    });
+  }, [computed.transactions, txSearch, txActionFilter, txMonthFilter]);
 
   const filteredDividends = useMemo(() => {
-    return [...state.dividends]
-      .sort((a, b) => {
-        if (a.status !== b.status) return a.status === "Unpaid" ? -1 : 1;
-        return (b.paymentDate || b.announcementDate).localeCompare(
-          a.paymentDate || a.announcementDate
-        );
-      })
-      .filter((d) => {
-        if (divStatusFilter !== "ALL" && d.status !== divStatusFilter)
-          return false;
-        if (divSearch.trim()) {
-          const q = divSearch.toLowerCase();
-          return (
-            d.ticker.toLowerCase().includes(q) ||
-            d.term.toLowerCase().includes(q) ||
-            d.year.toLowerCase().includes(q)
-          );
-        }
-        return true;
-      });
-  }, [state.dividends, divStatusFilter, divSearch]);
+    const q = divSearch.toLowerCase().trim();
+    return [...computed.dividends].reverse().filter((d) => {
+      if (divStatusFilter !== "ALL" && d.status !== divStatusFilter)
+        return false;
+      if (divReinvFilter !== "ALL" && d.reinvest !== divReinvFilter)
+        return false;
+      if (
+        q &&
+        !`${d.ticker} ${d.company} ${d.year} ${d.term}`
+          .toLowerCase()
+          .includes(q)
+      )
+        return false;
+      return true;
+    });
+  }, [computed.dividends, divSearch, divStatusFilter, divReinvFilter]);
 
-  const { summary } = analytics;
+  const unpaidDivCount = useMemo(
+    () => computed.dividends.filter((d) => d.status === "Unpaid").length,
+    [computed.dividends]
+  );
 
+  const allSectors = useMemo(
+    () =>
+      Array.from(
+        new Set(computed.holdings.map((h) => h.sector).filter(Boolean))
+      ).sort(),
+    [computed.holdings]
+  );
+
+  // Selected Stock for Tab 6 (Research)
+  const selectedStock =
+    computed.compMap[researchTicker] || computed.holdings[0];
+
+  // Positions for 3D scene
+  const positionsFor3D = useMemo(
+    () =>
+      computed.holdings
+        .filter((h) => h.activeShares > 0)
+        .map((h) => ({
+          ticker: h.ticker,
+          name: h.name,
+          sector: h.sector,
+          frequency: h.frequency,
+          shares: h.activeShares,
+          totalSharesBought: h.totalBuyShares,
+          totalSharesSold: h.totalSellShares,
+          wac: h.wac,
+          costBasis: h.activeCostBasis,
+          livePrice: h.price,
+          ldcp: h.ldcp,
+          dayChange: h.change,
+          dayChangePct: h.changePct,
+          marketValue: h.marketValue,
+          unrealizedPnl: h.unrealizedPnL,
+          unrealizedPnlPct: h.unrealizedPct,
+          realizedPnl: h.realizedPnL,
+          grossDividends: h.grossDivPaid,
+          whtTotal: h.whtPaid,
+          zakatTotal: h.zakatPaid,
+          netDividendsPaid: h.netDivPaid,
+          netDividendsUnpaid: h.netDivUnpaid,
+          totalReturn: h.totalReturn,
+          totalReturnPct: h.totalReturnPct,
+          yieldOnCostPct: h.yoc,
+          currentYieldPct:
+            h.marketValue > 0 ? (h.netDivPaid / h.marketValue) * 100 : 0,
+          weightPct: h.weight,
+          high52: h.high52,
+          dayRange: h.dayRange,
+          volume: h.volume,
+          pe: h.pe,
+          asOf: h.asOf,
+          lots: [],
+        })),
+    [computed.holdings]
+  );
+
+  // =========================================================================
+  // RENDER
+  // =========================================================================
   return (
-    <div className="min-h-screen pb-16">
-      {/* Top Sticky Specular Glass Header (Rune UI style) */}
-      <header
-        className="sticky top-0 z-40 border-b border-white/10 backdrop-blur-xl"
-        style={{ backgroundColor: "var(--bg-glass)" }}
-      >
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/30 via-indigo-500/20 to-amber-500/30 border border-white/20 flex items-center justify-center shadow-inner">
-              <Sparkles className="w-5 h-5 text-emerald-400" />
+    <div>
+      {/* TOP EXECUTIVE NAVY HEADER */}
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark">PSX</div>
+          <div>
+            <div className="brand-name">
+              PSX Portfolio &amp; Dividend Intelligence
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base sm:text-lg font-bold tracking-tight">
-                  PSX Dividend &amp; Equity Terminal
-                </h1>
-                <span className="px-2 py-0.5 text-[10px] font-mono-num uppercase tracking-wider rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
-                  Rune Edition
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-0.5">
-                <span className="inline-flex items-center gap-1.5">
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      realtimeStatus === "SUBSCRIBED"
-                        ? "bg-emerald-500 animate-pulse"
-                        : "bg-amber-500"
-                    }`}
-                  />
-                  Supabase Realtime:{" "}
-                  <strong className="text-slate-200">
-                    {realtimeStatus === "SUBSCRIBED"
-                      ? "Instant Multi-Device Sync"
-                      : isLoadingDb
-                      ? "Syncing..."
-                      : "Connected"}
-                  </strong>
-                </span>
-                <span>•</span>
-                <span>{lastSyncMsg}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Header Controls */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            {/* Unpaid / Announced Dividend Alert Pill */}
-            <button
-              onClick={() => {
-                setActiveTab("dividends");
-                setDivStatusFilter("Unpaid");
-              }}
-              className="rune-pill px-3 py-1.5 text-xs flex items-center gap-1.5 cursor-pointer hover:border-amber-400/50"
-            >
-              <Bell
-                className={`w-3.5 h-3.5 ${
-                  unpaidDividends.length > 0
-                    ? "text-amber-400 animate-bounce"
-                    : "text-slate-400"
-                }`}
-              />
-              <span>
-                Pending Payouts:{" "}
-                <strong className="font-mono-num text-amber-300">
-                  {unpaidDividends.length}
-                </strong>
+            <div className="brand-meta">
+              <span
+                style={{
+                  background: cloudSynced
+                    ? "rgba(16, 185, 129, 0.28)"
+                    : "rgba(245, 158, 11, 0.25)",
+                  color: "#ffffff",
+                  border: cloudSynced
+                    ? "1px solid #34d399"
+                    : "1px solid #fbbf24",
+                  padding: "1px 8px",
+                  borderRadius: "99px",
+                  fontWeight: 700,
+                  fontSize: "11px",
+                }}
+              >
+                {cloudSynced
+                  ? "✓ Instant Cloud Sync Active — All laptops & phones synced"
+                  : "⟳ Connecting to Cloud Database..."}
               </span>
-            </button>
-
-            {/* Fast Parallel Live PSX Sync Button */}
-            <button
-              onClick={() => syncLivePsxQuotes(false)}
-              disabled={isSyncingPsx}
-              className="rune-pill px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/40 cursor-pointer disabled:opacity-60"
-            >
-              <RefreshCw
-                className={`w-3.5 h-3.5 ${isSyncingPsx ? "animate-spin" : ""}`}
-              />
-              {isSyncingPsx
-                ? "Syncing 27 Tickers..."
-                : "Sync Live PSX & Notices"}
-            </button>
-
-            {/* Theme Switch */}
-            <button
-              onClick={handleToggleTheme}
-              className="rune-pill px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 text-slate-300 cursor-pointer"
-              title="Toggle Dark / Light Specular Theme"
-            >
-              {theme === "dark" ? (
-                <>
-                  <Sun className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Light</span>
-                </>
-              ) : (
-                <>
-                  <Moon className="w-3.5 h-3.5 text-indigo-300" />
-                  <span>Dark</span>
-                </>
+              {lastSyncTime && (
+                <span style={{ opacity: 0.9 }}>
+                  • Live PSX Prices Synced at {lastSyncTime}
+                </span>
               )}
-            </button>
+            </div>
           </div>
         </div>
 
-        {/* Navigation Bar */}
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 flex items-center gap-1.5 overflow-x-auto pb-2.5">
-          {[
-            {
-              id: "dashboard",
-              label: "Executive Dashboard & 3D",
-              icon: Activity,
-            },
-            {
-              id: "holdings",
-              label: `Active Holdings (${summary.activeCount})`,
-              icon: Layers,
-            },
-            {
-              id: "transactions",
-              label: `Trade Ledger (${state.transactions.length})`,
-              icon: Wallet,
-            },
-            {
-              id: "dividends",
-              label: `Dividend Vault & PSX Monitor (${state.dividends.length})`,
-              icon: Award,
-            },
-            {
-              id: "companies",
-              label: `PSX Tickers & Cloud (${state.companies.length})`,
-              icon: Building2,
-            },
-          ].map((tab) => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as TabId)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
-                  active
-                    ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent"
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {tab.label}
-              </button>
-            );
-          })}
+        <div className="btn-group">
+          <button
+            className="btn btn-header"
+            onClick={() => {
+              setActiveTab("dividends");
+              setDivStatusFilter("Unpaid");
+            }}
+            title="View Unpaid & Announced PSX Dividends"
+          >
+            🔔 Unpaid Dividends ({unpaidDivCount})
+          </button>
+          <button
+            className="btn btn-header"
+            onClick={() => syncLivePsxPricesAndDividends(false)}
+            disabled={syncingPsx}
+          >
+            {syncingPsx ? "⟳ Syncing PSX..." : "↻ Sync Live PSX Prices"}
+          </button>
+          <button className="btn btn-header" onClick={toggleTheme}>
+            {theme === "light" ? "🌙 Dark Mode" : "☀️ Light Mode"}
+          </button>
+          <button className="btn btn-emerald" onClick={() => openTxModal(null)}>
+            + Add Buy / Sell
+          </button>
+          <button className="btn btn-amber" onClick={() => openDivModal(null)}>
+            + Add Dividend
+          </button>
         </div>
       </header>
 
-      {/* Toast Notification Banner */}
-      {toastAlert && (
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 mt-4">
-          <div className="rune-card-rose px-4 py-3 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-              <div>
-                <div className="text-xs font-bold">{toastAlert.title}</div>
-                <div className="text-xs text-slate-300">
-                  {toastAlert.subtitle}
-                </div>
-              </div>
-            </div>
-            <button
-              onClick={() => setToastAlert(null)}
-              className="text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
-            >
-              Dismiss
-            </button>
-          </div>
+      {/* TOAST NOTIFICATION BANNER */}
+      {toastBanner && (
+        <div
+          style={{
+            background: "var(--pos-pill)",
+            color: "var(--pos-strong)",
+            borderBottom: "1px solid var(--pos-border)",
+            padding: "8px 24px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            fontWeight: 600,
+            fontSize: "12.5px",
+          }}
+        >
+          <span>{toastBanner}</span>
+          <button
+            onClick={() => setToastBanner(null)}
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 700,
+              color: "inherit",
+            }}
+          >
+            ✕ Dismiss
+          </button>
         </div>
       )}
 
-      {/* Main Content Container */}
-      <main className="max-w-[1440px] mx-auto px-4 sm:px-6 mt-5 space-y-5">
-        {/* 6-Card Specular Executive KPI Ribbon */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
-          {/* Card 1: Market Value */}
-          <div className="rune-card p-4">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="font-medium">Live Market Value</span>
-              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-mono-num font-bold">
-                LIVE PSX
-              </span>
-            </div>
-            <div className="font-mono-num text-xl font-bold mt-1.5">
-              Rs.{" "}
-              {summary.totalMarketValue.toLocaleString("en-PK", {
-                maximumFractionDigits: 0,
-              })}
-            </div>
-            <div
-              className={`text-xs font-mono-num mt-1 flex items-center gap-1 font-medium ${
-                summary.totalDayChangeValue >= 0
-                  ? "text-emerald-400"
-                  : "text-rose-400"
-              }`}
-            >
-              {summary.totalDayChangeValue >= 0 ? (
-                <TrendingUp className="w-3.5 h-3.5" />
-              ) : (
-                <TrendingDown className="w-3.5 h-3.5" />
-              )}
-              Day: {summary.totalDayChangeValue >= 0 ? "+" : ""}Rs.{" "}
-              {Math.round(summary.totalDayChangeValue).toLocaleString()} (
-              {summary.totalDayChangePct.toFixed(2)}%)
-            </div>
-          </div>
+      {/* FAMILIAR 6-TAB NAVIGATION BAR */}
+      <nav className="nav-bar">
+        <div className="nav-links">
+          <button
+            className={`nav-btn ${activeTab === "overview" ? "active" : ""}`}
+            onClick={() => setActiveTab("overview")}
+          >
+            Overview &amp; Charts
+          </button>
+          <button
+            className={`nav-btn ${activeTab === "holdings" ? "active" : ""}`}
+            onClick={() => setActiveTab("holdings")}
+          >
+            My Stocks (Prices){" "}
+            <span className="count-pill">{t.activeHoldingsCount}</span>
+          </button>
+          <button
+            className={`nav-btn ${activeTab === "transactions" ? "active" : ""}`}
+            onClick={() => setActiveTab("transactions")}
+          >
+            Transactions{" "}
+            <span className="count-pill">{computed.transactions.length}</span>
+          </button>
+          <button
+            className={`nav-btn ${activeTab === "dividends" ? "active" : ""}`}
+            onClick={() => setActiveTab("dividends")}
+          >
+            Dividends{" "}
+            <span className="count-pill">{computed.dividends.length}</span>
+          </button>
+          <button
+            className={`nav-btn ${activeTab === "monthly" ? "active" : ""}`}
+            onClick={() => setActiveTab("monthly")}
+          >
+            Monthly Summary
+          </button>
+          <button
+            className={`nav-btn ${activeTab === "research" ? "active" : ""}`}
+            onClick={() => setActiveTab("research")}
+          >
+            PSX Stock Charts &amp; Links
+          </button>
+        </div>
+        <div className="btn-group">
+          <span className="status-pill pill-paid mono">
+            +{fmtPKR(t.totalNetDivPaid, 0)} Net Paid
+          </span>
+        </div>
+      </nav>
 
-          {/* Card 2: Active Cost Basis */}
-          <div className="rune-card p-4">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="font-medium">Active Cost Basis (WAC)</span>
-              <span className="font-mono-num text-[11px] font-bold text-indigo-300">
-                {summary.activeCount} Active
-              </span>
-            </div>
-            <div className="font-mono-num text-xl font-bold mt-1.5">
-              Rs.{" "}
-              {summary.totalCostBasis.toLocaleString("en-PK", {
-                maximumFractionDigits: 0,
-              })}
-            </div>
-            <div className="text-xs text-slate-400 mt-1 font-mono-num">
-              Fees+SST: Rs.{" "}
-              {Math.round(
-                summary.totalBrokeragePaid + summary.totalSstPaid
-              ).toLocaleString()}{" "}
-              included
-            </div>
-          </div>
-
-          {/* Card 3: Unrealized & Realized P&L */}
-          <div className="rune-card p-4">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="font-medium">Unrealized Capital P&amp;L</span>
-              <span
-                className={`font-mono-num text-xs font-bold ${
-                  summary.totalUnrealizedPnlPct >= 0
-                    ? "text-emerald-400"
-                    : "text-rose-400"
-                }`}
+      {/* MAIN FULL-SCREEN-WIDTH CONTAINER */}
+      <main className="container">
+        {/* ===================================================================
+            TAB 1: OVERVIEW & CHARTS
+            =================================================================== */}
+        {activeTab === "overview" && (
+          <section>
+            {/* 5 KPI Summary Cards */}
+            <div className="kpi-row">
+              <div
+                className="kpi-box"
+                style={{ "--kpi-color": "#2563eb" } as React.CSSProperties}
               >
-                {summary.totalUnrealizedPnlPct >= 0 ? "+" : ""}
-                {summary.totalUnrealizedPnlPct.toFixed(2)}%
-              </span>
-            </div>
-            <div
-              className={`font-mono-num text-xl font-bold mt-1.5 ${
-                summary.totalUnrealizedPnl >= 0
-                  ? "text-emerald-400"
-                  : "text-rose-400"
-              }`}
-            >
-              {summary.totalUnrealizedPnl >= 0 ? "+" : ""}Rs.{" "}
-              {Math.round(summary.totalUnrealizedPnl).toLocaleString()}
-            </div>
-            <div className="text-xs text-slate-400 mt-1 font-mono-num">
-              Realized (ALTN):{" "}
-              <span className="text-rose-400 font-semibold">
-                Rs. {Math.round(summary.totalRealizedPnl).toLocaleString()}
-              </span>
-            </div>
-          </div>
+                <div className="kpi-title">
+                  <span>Current Portfolio Value</span>
+                </div>
+                <div className="kpi-main">
+                  {fmtPKR(t.totalMarketValue, 0)}
+                </div>
+                <div className="kpi-foot">
+                  <span>
+                    {t.activeHoldingsCount} Active Stocks (
+                    {fmtNum(t.totalActiveShares)} sh)
+                  </span>
+                  <span className="mono">
+                    Cost: {fmtPKR(t.totalActiveCostBasis, 0)}
+                  </span>
+                </div>
+              </div>
 
-          {/* Card 4: Net Dividends Paid */}
-          <div className="rune-card-rose p-4">
-            <div className="flex items-center justify-between text-xs text-amber-300">
-              <span className="font-semibold">Net Dividends Paid</span>
-              <span className="font-mono-num text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">
-                YoC {summary.portfolioYieldOnCostPct.toFixed(2)}%
-              </span>
-            </div>
-            <div className="font-mono-num text-xl font-bold text-amber-300 mt-1.5">
-              Rs.{" "}
-              {summary.totalNetDividendsPaid.toLocaleString("en-PK", {
-                maximumFractionDigits: 0,
-              })}
-            </div>
-            <div className="text-xs text-slate-300 mt-1 font-mono-num">
-              Gross: Rs.{" "}
-              {Math.round(summary.totalGrossDividendsPaid).toLocaleString()} •
-              WHT: Rs. {Math.round(summary.totalWhtPaid).toLocaleString()}
-            </div>
-          </div>
-
-          {/* Card 5: Total All-Inclusive Return */}
-          <div className="rune-card p-4">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="font-medium">All-Inclusive Return</span>
-              <span className="text-[11px] font-mono-num text-slate-400">
-                Cap + Div + Realized
-              </span>
-            </div>
-            <div
-              className={`font-mono-num text-xl font-bold mt-1.5 ${
-                summary.totalAllInclusiveReturn >= 0
-                  ? "text-emerald-400"
-                  : "text-rose-400"
-              }`}
-            >
-              {summary.totalAllInclusiveReturn >= 0 ? "+" : ""}Rs.{" "}
-              {Math.round(summary.totalAllInclusiveReturn).toLocaleString()}
-            </div>
-            <div className="text-xs text-slate-400 mt-1 font-mono-num">
-              Net Return on Basis:{" "}
-              <strong>{summary.totalAllInclusiveReturnPct.toFixed(2)}%</strong>
-            </div>
-          </div>
-
-          {/* Card 6: Net Out-of-Pocket Capital + Rune Switch for Legacy MCB */}
-          <div className="rune-card p-4">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="font-medium">Net Out-of-Pocket Cash</span>
-              <button
-                onClick={handleToggleLegacyMcb}
-                className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer border transition-all ${
-                  state.settings.includeLegacyMcbInCashflow
-                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
-                    : "bg-white/5 text-slate-400 border-white/10"
-                }`}
-                title="Toggle Legacy MCB Sale (219 sh @ Rs. 357.60 = Rs. 78,315.33)"
+              <div
+                className="kpi-box"
+                style={{ "--kpi-color": "#4f46e5" } as React.CSSProperties}
               >
-                MCB: {state.settings.includeLegacyMcbInCashflow ? "ON" : "OFF"}
-              </button>
-            </div>
-            <div className="font-mono-num text-xl font-bold mt-1.5">
-              Rs. {Math.round(summary.netOutOfPocketCapital).toLocaleString()}
-            </div>
-            <div className="text-[11px] text-slate-400 mt-1 font-mono-num">
-              {state.settings.includeLegacyMcbInCashflow
-                ? `Includes Rs. ${LEGACY_MCB_SALE.netProceeds.toLocaleString()} MCB sale`
-                : "Excludes legacy MCB sale"}
-            </div>
-          </div>
-        </section>
-
-        {/* TAB 1: EXECUTIVE DASHBOARD */}
-        {activeTab === "dashboard" && (
-          <div className="space-y-5">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              <div className="lg:col-span-7">
-                <MonthlyDividendChart
-                  data={analytics.monthlyDividends}
-                  totalGross={summary.totalGrossDividendsPaid}
-                  totalNet={summary.totalNetDividendsPaid}
-                  totalWht={summary.totalWhtPaid}
-                  totalZakat={summary.totalZakatPaid}
-                />
-              </div>
-              <div className="lg:col-span-5">
-                <SectorAllocationCard
-                  sectors={analytics.sectors}
-                  selectedSector={selectedSector}
-                  onSelectSector={(sec) => {
-                    setSelectedSector(sec);
-                  }}
-                />
-              </div>
-            </div>
-
-            <Portfolio3DTowers
-              positions={analytics.activePositions}
-              onSelectTicker={(sym) => setModalTicker(sym)}
-            />
-
-            <StockLeaderboardChart
-              positions={analytics.activePositions}
-              onSelectTicker={(sym) => setModalTicker(sym)}
-            />
-          </div>
-        )}
-
-        {/* TAB 2: ACTIVE HOLDINGS & READ-ONLY LIVE PSX QUOTES */}
-        {activeTab === "holdings" && (
-          <div className="rune-card p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-              <div>
-                <span className="text-[11px] uppercase tracking-widest text-indigo-400 font-semibold">
-                  Weighted Average Cost (WAC) Portfolio Engine
-                </span>
-                <h2 className="text-lg font-bold mt-0.5">
-                  Active PSX Equity Holdings ({filteredHoldings.length} of{" "}
-                  {analytics.activePositions.length})
-                </h2>
+                <div className="kpi-title">
+                  <span>Net Cash Invested</span>
+                </div>
+                <div className="kpi-main">
+                  {fmtPKR(t.netCashInvested, 0)}
+                </div>
+                <div className="kpi-foot">
+                  <span>Buys: {fmtPKR(t.totalBuyOutflow, 0)}</span>
+                  <span className="mono">
+                    Sells: +{fmtPKR(t.effectiveSellInflow, 0)}
+                  </span>
+                </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={holdingSearch}
-                    onChange={(e) => setHoldingSearch(e.target.value)}
-                    placeholder="Search ticker, name, sector..."
-                    className="rune-input pl-8 w-56 text-xs"
+              <div
+                className="kpi-box"
+                style={{ "--kpi-color": "#059669" } as React.CSSProperties}
+              >
+                <div className="kpi-title">
+                  <span>Net Dividends Received</span>
+                </div>
+                <div className="kpi-main pos">
+                  +{fmtPKR(t.totalNetDivPaid, 2)}
+                </div>
+                <div className="kpi-foot">
+                  <span>Gross: {fmtPKR(t.totalGrossDivPaid, 0)}</span>
+                  <span className="mono">
+                    Tax/Zakat: -{fmtPKR(t.totalTaxWithheld, 0)}
+                  </span>
+                </div>
+              </div>
+
+              <div
+                className="kpi-box"
+                style={
+                  {
+                    "--kpi-color":
+                      t.totalUnrealizedPnL >= 0 ? "#059669" : "#dc2626",
+                  } as React.CSSProperties
+                }
+              >
+                <div className="kpi-title">
+                  <span>Unrealized Capital P&amp;L</span>
+                </div>
+                <div
+                  className={`kpi-main ${
+                    t.totalUnrealizedPnL >= 0 ? "pos" : "neg"
+                  }`}
+                >
+                  {fmtSignedPKR(t.totalUnrealizedPnL, 0)}
+                </div>
+                <div className="kpi-foot">
+                  <span>
+                    Realized (ALTN): {fmtSignedPKR(t.totalRealizedPnL, 0)}
+                  </span>
+                  <span
+                    className={`pnl-pill ${
+                      t.totalUnrealizedPnL >= 0 ? "pnl-pos" : "pnl-neg"
+                    }`}
+                  >
+                    {t.totalUnrealizedPct >= 0 ? "+" : ""}
+                    {t.totalUnrealizedPct.toFixed(2)}%
+                  </span>
+                </div>
+              </div>
+
+              <div
+                className="kpi-box"
+                style={
+                  {
+                    "--kpi-color":
+                      t.allInNetProfit >= 0 ? "#059669" : "#e11d48",
+                  } as React.CSSProperties
+                }
+              >
+                <div className="kpi-title">
+                  <span>Total Net Return (Cap + Divs)</span>
+                </div>
+                <div
+                  className={`kpi-main ${
+                    t.allInNetProfit >= 0 ? "pos" : "neg"
+                  }`}
+                >
+                  {fmtSignedPKR(t.allInNetProfit, 0)}
+                </div>
+                <div className="kpi-foot">
+                  <span>
+                    Reinvested: {fmtPKR(t.totalReinvestedDivNet, 0)}
+                  </span>
+                  <span
+                    className={`pnl-pill ${
+                      t.allInNetProfit >= 0 ? "pnl-pos" : "pnl-neg"
+                    }`}
+                  >
+                    {t.allInRoiPct >= 0 ? "+" : ""}
+                    {t.allInRoiPct.toFixed(2)}% ROI
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Row 1: Monthly Dividends Chart + Sector Breakdown */}
+            <div className="grid-2">
+              <div className="card">
+                <div className="card-header">
+                  <div>
+                    <div className="card-title">
+                      Monthly Net Dividends &amp; Cumulative Income
+                    </div>
+                    <div className="card-subtitle">
+                      Monthly cash dividends received after WHT/Zakat vs.
+                      cumulative growth curve
+                    </div>
+                  </div>
+                </div>
+                <div className="card-body">
+                  <div>
+                    <div className="chart-legend">
+                      <span className="legend-item">
+                        <span
+                          className="legend-swatch"
+                          style={{ background: "#10b981" }}
+                        />
+                        <span>Net Dividend Paid (Rs. — Left Axis)</span>
+                      </span>
+                      <span className="legend-item">
+                        <span
+                          className="legend-swatch"
+                          style={{ background: "#f59e0b" }}
+                        />
+                        <span>WHT &amp; Zakat Tax Deducted (Stacked Top)</span>
+                      </span>
+                      <span className="legend-item">
+                        <span
+                          className="legend-line"
+                          style={{ background: "#2563eb" }}
+                        />
+                        <span>Cumulative Net Dividends (Rs. — Right Axis)</span>
+                      </span>
+                    </div>
+                    <MonthlyDividendsSvgChart monthly={computed.monthly} />
+                  </div>
+                  <MonthlyStatStrip
+                    monthly={computed.monthly}
+                    totals={computed.totals}
                   />
                 </div>
-                <select
-                  value={selectedSector}
-                  onChange={(e) => setSelectedSector(e.target.value)}
-                  className="rune-input text-xs"
-                >
-                  <option value="ALL">All PSX Sectors</option>
-                  {analytics.sectors.map((s) => (
-                    <option key={s.sector} value={s.sector}>
-                      {s.sector} ({s.count})
-                    </option>
-                  ))}
-                </select>
               </div>
-            </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-white/10 text-slate-400 uppercase text-[10px] tracking-wider">
-                    <th className="py-3 px-3">Ticker / Company</th>
-                    <th className="py-3 px-3 text-right">Shares</th>
-                    <th className="py-3 px-3 text-right">WAC Basis</th>
-                    <th className="py-3 px-3 text-right">Total Cost</th>
-                    <th className="py-3 px-3 text-right">
-                      Live PSX Price (Read-Only)
-                    </th>
-                    <th className="py-3 px-3 text-right">Market Value</th>
-                    <th className="py-3 px-3 text-right">Unrealized P&amp;L</th>
-                    <th className="py-3 px-3 text-right">Net Dividends</th>
-                    <th className="py-3 px-3 text-right">Total Return</th>
-                    <th className="py-3 px-3 text-right">YoC %</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5 font-mono-num">
-                  {filteredHoldings.map((pos) => (
-                    <tr
-                      key={pos.ticker}
-                      onClick={() => setModalTicker(pos.ticker)}
-                      className="hover:bg-white/[0.04] transition-colors cursor-pointer"
-                    >
-                      <td className="py-3 px-3 font-sans">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono-num font-bold text-indigo-300 text-sm">
-                            {pos.ticker}
-                          </span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-400 font-semibold">
-                            {pos.weightPct.toFixed(1)}%
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-slate-400 truncate max-w-[190px]">
-                          {pos.name}
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 text-right font-semibold">
-                        {pos.shares.toLocaleString()}
-                      </td>
-                      <td className="py-3 px-3 text-right text-slate-200 font-medium">
-                        Rs. {pos.wac.toFixed(2)}
-                      </td>
-                      <td className="py-3 px-3 text-right text-slate-200 font-medium">
-                        Rs. {Math.round(pos.costBasis).toLocaleString()}
-                      </td>
-                      {/* Read-Only Live Price — Crisp High-Contrast in both Dark & Light Mode */}
-                      <td
-                        className="py-3 px-3 text-right"
-                        title={pos.asOf || "Live PSX Feed"}
-                      >
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/35">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                          <span className="font-bold text-emerald-300">
-                            Rs. {pos.livePrice.toFixed(2)}
-                          </span>
-                        </div>
-                        <div
-                          className={`text-[10px] mt-0.5 font-semibold ${
-                            pos.dayChange >= 0
-                              ? "text-emerald-400"
-                              : "text-rose-400"
-                          }`}
-                        >
-                          {pos.dayChange >= 0 ? "+" : ""}
-                          {pos.dayChange.toFixed(2)} (
-                          {pos.dayChangePct.toFixed(2)}%)
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 text-right font-bold">
-                        Rs. {Math.round(pos.marketValue).toLocaleString()}
-                      </td>
-                      <td
-                        className={`py-3 px-3 text-right font-semibold ${
-                          pos.unrealizedPnl >= 0
-                            ? "text-emerald-400"
-                            : "text-rose-400"
-                        }`}
-                      >
-                        <div>
-                          {pos.unrealizedPnl >= 0 ? "+" : ""}Rs.{" "}
-                          {Math.round(pos.unrealizedPnl).toLocaleString()}
-                        </div>
-                        <div className="text-[10px]">
-                          ({pos.unrealizedPnlPct >= 0 ? "+" : ""}
-                          {pos.unrealizedPnlPct.toFixed(2)}%)
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 text-right text-amber-300 font-semibold">
-                        {pos.netDividendsPaid > 0
-                          ? `Rs. ${Math.round(
-                              pos.netDividendsPaid
-                            ).toLocaleString()}`
-                          : "—"}
-                      </td>
-                      <td
-                        className={`py-3 px-3 text-right font-bold ${
-                          pos.totalReturn >= 0
-                            ? "text-emerald-400"
-                            : "text-rose-400"
-                        }`}
-                      >
-                        {pos.totalReturn >= 0 ? "+" : ""}Rs.{" "}
-                        {Math.round(pos.totalReturn).toLocaleString()}
-                      </td>
-                      <td className="py-3 px-3 text-right text-amber-300 font-semibold">
-                        {pos.yieldOnCostPct.toFixed(2)}%
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {analytics.exitedPositions.length > 0 && (
-              <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between text-xs text-slate-400">
-                <div>
-                  Closed / Exited Positions:{" "}
-                  {analytics.exitedPositions.map((ep) => (
-                    <button
-                      key={ep.ticker}
-                      onClick={() => setModalTicker(ep.ticker)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 font-mono-num ml-2 cursor-pointer"
-                    >
-                      <strong>{ep.ticker}</strong> (0 sh • Realized P&amp;L: Rs.{" "}
-                      {Math.round(ep.realizedPnl).toLocaleString()})
-                    </button>
-                  ))}
-                </div>
-                <span>Click any row to inspect WAC lots &amp; PSX portal</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 3: TRADE LEDGER (BUY / SELL CRUD WITH INSTANT SUPABASE SYNC) */}
-        {activeTab === "transactions" && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-            <div className="lg:col-span-4">
-              <form
-                onSubmit={handleAddTransaction}
-                className="rune-card p-5 space-y-3.5 sticky top-28"
-              >
-                <div>
-                  <span className="text-[11px] uppercase tracking-widest text-emerald-400 font-semibold">
-                    Supabase Cloud Ledger
-                  </span>
-                  <h3 className="text-base font-bold mt-0.5">
-                    Record PSX Trade (Buy / Sell)
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Saves immediately to Supabase Postgres &amp; updates all
-                    connected laptops in real time.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2.5">
+              <div className="card">
+                <div className="card-header">
                   <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      Trade Date
-                    </label>
-                    <input
-                      type="date"
-                      value={txDate}
-                      onChange={(e) => setTxDate(e.target.value)}
-                      className="rune-input w-full font-mono-num text-xs"
-                      required
+                    <div className="card-title">
+                      Portfolio Allocation by PSX Sector
+                    </div>
+                    <div className="card-subtitle">
+                      Click any sector bar to filter your holdings table
+                    </div>
+                  </div>
+                  <select
+                    className="select"
+                    value={sectorSortMetric}
+                    onChange={(e) =>
+                      setSectorSortMetric(
+                        e.target.value as typeof sectorSortMetric
+                      )
+                    }
+                  >
+                    <option value="marketValue">By Market Value</option>
+                    <option value="activeCostBasis">By Cost Invested</option>
+                    <option value="netDivPaid">By Net Dividends</option>
+                    <option value="totalReturn">By Total Return</option>
+                  </select>
+                </div>
+                <div
+                  className="card-body"
+                  style={{ justifyContent: "flex-start" }}
+                >
+                  {(() => {
+                    const tot =
+                      sectorBreakdownList.reduce(
+                        (s, x) => s + Math.max(0, x[sectorSortMetric]),
+                        0
+                      ) || 1;
+                    return sectorBreakdownList.map((s) => {
+                      const val = s[sectorSortMetric];
+                      const pct = Math.max(0, (val / tot) * 100);
+                      const col = getSectorColor(s.sector);
+                      return (
+                        <div
+                          key={s.sector}
+                          style={{
+                            padding: "6px 0",
+                            borderBottom: "1px solid var(--border)",
+                            cursor: "pointer",
+                          }}
+                          onClick={() => {
+                            setHoldingsSectorFilter(s.sector);
+                            setActiveTab("holdings");
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              fontSize: "12px",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "7px",
+                                fontWeight: 600,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  width: "10px",
+                                  height: "10px",
+                                  borderRadius: "3px",
+                                  background: col,
+                                  display: "inline-block",
+                                }}
+                              />
+                              <span>{s.sector}</span>
+                              <span className="muted">({s.count})</span>
+                            </span>
+                            <span className="mono">
+                              <b>{fmtPKR(val, 0)}</b>{" "}
+                              <span className="muted">
+                                ({pct.toFixed(1)}%)
+                              </span>
+                              <span
+                                className={
+                                  s.totalReturn >= 0 ? "pos" : "neg"
+                                }
+                                style={{ marginLeft: "6px" }}
+                              >
+                                {fmtSignedPKR(s.totalReturn, 0)}
+                              </span>
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              height: "6px",
+                              background: "var(--bg-subtle)",
+                              borderRadius: "99px",
+                              overflow: "hidden",
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: `${Math.min(100, pct)}%`,
+                                height: "100%",
+                                background: col,
+                                borderRadius: "99px",
+                              }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+            </div>
+
+            {/* Row 2: Stock Profit/Loss Leaderboard + 3D Portfolio View */}
+            <div className="grid-equal">
+              <div className="card">
+                <div className="card-header">
+                  <div>
+                    <div className="card-title">
+                      Stock Profit/Loss &amp; Dividend Leaderboard
+                    </div>
+                    <div className="card-subtitle">
+                      Ranked by Total Net Return (Unrealized P&amp;L + Realized
+                      P&amp;L + Net Dividends)
+                    </div>
+                  </div>
+                </div>
+                <div
+                  className="table-container"
+                  style={{ maxHeight: "390px", overflowY: "auto" }}
+                >
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Ticker</th>
+                        <th>Company</th>
+                        <th className="right">Market Value</th>
+                        <th className="right">Unrealized P&amp;L</th>
+                        <th className="right">Net Dividends</th>
+                        <th className="right">Total Return</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...computed.holdings]
+                        .filter((h) => h.activeShares > 0)
+                        .sort((a, b) => b.totalReturn - a.totalReturn)
+                        .map((h) => (
+                          <tr
+                            key={h.ticker}
+                            onClick={() => openStockResearch(h.ticker)}
+                            style={{ cursor: "pointer" }}
+                          >
+                            <td
+                              className="mono fw-700"
+                              style={{ color: "var(--primary)" }}
+                            >
+                              {h.ticker}
+                            </td>
+                            <td className="fw-600">{h.name}</td>
+                            <td className="mono right fw-600">
+                              {fmtPKR(h.marketValue, 0)}
+                            </td>
+                            <td
+                              className={`mono right ${
+                                h.unrealizedPnL >= 0 ? "pos" : "neg"
+                              }`}
+                            >
+                              {fmtSignedPKR(h.unrealizedPnL, 0)}
+                            </td>
+                            <td className="mono right pos">
+                              {h.netDivPaid > 0
+                                ? "+" + fmtPKR(h.netDivPaid, 0)
+                                : "—"}
+                            </td>
+                            <td className="mono right">
+                              <span
+                                className={`pnl-pill ${
+                                  h.totalReturn >= 0 ? "pnl-pos" : "pnl-neg"
+                                }`}
+                              >
+                                {fmtSignedPKR(h.totalReturn, 0)} (
+                                {h.totalReturnPct >= 0 ? "+" : ""}
+                                {h.totalReturnPct.toFixed(1)}%)
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <div>
+                    <div className="card-title">
+                      3D Portfolio Value &amp; Dividend Towers
+                    </div>
+                    <div className="card-subtitle">
+                      Drag to rotate • Scroll to zoom • Click any 3D tower to
+                      inspect stock
+                    </div>
+                  </div>
+                </div>
+                <div className="card-body">
+                  <div className="chart-legend" style={{ marginBottom: "8px" }}>
+                    <span className="legend-item">
+                      <span
+                        className="legend-swatch"
+                        style={{ background: "#10b981" }}
+                      />
+                      <span>Tower Height = Market Value (Profitable)</span>
+                    </span>
+                    <span className="legend-item">
+                      <span
+                        className="legend-swatch"
+                        style={{ background: "#f43f5e" }}
+                      />
+                      <span>Tower Height = Market Value (Negative P&amp;L)</span>
+                    </span>
+                    <span className="legend-item">
+                      <span
+                        className="legend-dot"
+                        style={{
+                          border: "2px solid #f59e0b",
+                          background: "transparent",
+                        }}
+                      />
+                      <span>Gold Halo Ring = Dividend Payer</span>
+                    </span>
+                  </div>
+                  <div className="canvas-3d-wrap">
+                    <Portfolio3DTowers
+                      positions={positionsFor3D}
+                      onSelectTicker={(sym) => openStockResearch(sym)}
                     />
                   </div>
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      Action
-                    </label>
-                    <select
-                      value={txAction}
-                      onChange={(e) =>
-                        setTxAction(e.target.value as "Buy" | "Sell")
-                      }
-                      className="rune-input w-full text-xs font-semibold"
-                    >
-                      <option value="Buy">Buy (Add Shares)</option>
-                      <option value="Sell">Sell (Reduce Shares)</option>
-                    </select>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ===================================================================
+            TAB 2: MY STOCKS (PRICES) — FULL SCREEN WIDTH, READ-ONLY LIVE PRICE
+            =================================================================== */}
+        {activeTab === "holdings" && (
+          <section>
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">
+                    My PSX Stocks, Live Read-Only Prices &amp; Returns
+                  </div>
+                  <div className="card-subtitle">
+                    Click any column header to sort • Latest prices are fetched
+                    live from PSX (read-only) • Click &quot;Chart&quot; to view
+                    stock orders &amp; chart
                   </div>
                 </div>
-
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">
-                    PSX Company Ticker
-                  </label>
+                <div className="btn-group">
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Search ticker or company..."
+                    value={holdingsSearch}
+                    onChange={(e) => setHoldingsSearch(e.target.value)}
+                  />
                   <select
-                    value={txTicker}
-                    onChange={(e) => handleSelectTxTicker(e.target.value)}
-                    className="rune-input w-full text-xs font-mono-num"
+                    className="select"
+                    value={holdingsSectorFilter}
+                    onChange={(e) => setHoldingsSectorFilter(e.target.value)}
                   >
-                    {state.companies.map((c) => (
-                      <option key={c.ticker} value={c.ticker}>
-                        {c.ticker} — {c.name} (Live: Rs. {c.price.toFixed(2)})
+                    <option value="ALL">
+                      All Sectors ({allSectors.length})
+                    </option>
+                    {allSectors.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
                       </option>
                     ))}
                   </select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      Shares Quantity
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={txShares}
-                      onChange={(e) => setTxShares(e.target.value)}
-                      className="rune-input w-full font-mono-num text-xs"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      Execution Price (PKR)
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={txPrice}
-                      onChange={(e) => setTxPrice(e.target.value)}
-                      className="rune-input w-full font-mono-num text-xs"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      Brokerage Fee (Auto)
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={txBrk}
-                      onChange={(e) => setTxBrk(e.target.value)}
-                      className="rune-input w-full font-mono-num text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      15% SST Tax (Auto)
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={txSst}
-                      onChange={(e) => setTxSst(e.target.value)}
-                      className="rune-input w-full font-mono-num text-xs"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">
-                    Notes (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={txNotes}
-                    onChange={(e) => setTxNotes(e.target.value)}
-                    placeholder="e.g. Long-term dividend accumulation"
-                    className="rune-input w-full text-xs"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg cursor-pointer transition-all"
-                >
-                  <Plus className="w-4 h-4" />
-                  Save {txAction} Transaction to Cloud
-                </button>
-              </form>
-            </div>
-
-            <div className="lg:col-span-8 rune-card p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <div>
-                  <h3 className="text-base font-bold">
-                    Complete PSX Transaction Ledger ({filteredTransactions.length}{" "}
-                    entries)
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    Deleting or adding any trade syncs immediately across all
-                    devices via Supabase.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={txSearch}
-                    onChange={(e) => setTxSearch(e.target.value)}
-                    placeholder="Filter ticker..."
-                    className="rune-input text-xs w-40"
-                  />
                   <select
-                    value={txActionFilter}
-                    onChange={(e) => setTxActionFilter(e.target.value)}
-                    className="rune-input text-xs"
+                    className="select"
+                    value={holdingsStatusFilter}
+                    onChange={(e) =>
+                      setHoldingsStatusFilter(
+                        e.target.value as typeof holdingsStatusFilter
+                      )
+                    }
                   >
-                    <option value="ALL">All Actions</option>
-                    <option value="Buy">Buy Only</option>
-                    <option value="Sell">Sell Only</option>
+                    <option value="ACTIVE">
+                      Active Holdings ({t.activeHoldingsCount})
+                    </option>
+                    <option value="ALL">
+                      All Tickers ({computed.holdings.length})
+                    </option>
+                    <option value="CLOSED">Sold / Closed (ALTN, MCB)</option>
                   </select>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setCompModalOpen(true)}
+                  >
+                    + Add New Company
+                  </button>
                 </div>
               </div>
 
-              <div className="overflow-x-auto max-h-[620px] overflow-y-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead className="sticky top-0 bg-[#0f1117] z-10">
-                    <tr className="border-b border-white/10 text-slate-400 uppercase text-[10px]">
-                      <th className="py-2.5 px-2.5">Date</th>
-                      <th className="py-2.5 px-2.5">Ticker</th>
-                      <th className="py-2.5 px-2.5">Action</th>
-                      <th className="py-2.5 px-2.5 text-right">Shares</th>
-                      <th className="py-2.5 px-2.5 text-right">Price</th>
-                      <th className="py-2.5 px-2.5 text-right">Brk + SST</th>
-                      <th className="py-2.5 px-2.5 text-right">Net Amount</th>
-                      <th className="py-2.5 px-2.5 text-center">Delete</th>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th onClick={() => handleSortHoldings("ticker")}>
+                        Ticker ↕
+                      </th>
+                      <th onClick={() => handleSortHoldings("name")}>
+                        Company Name ↕
+                      </th>
+                      <th onClick={() => handleSortHoldings("sector")}>
+                        Sector ↕
+                      </th>
+                      <th>Div Freq</th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("activeShares")}
+                      >
+                        Shares Held ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("wac")}
+                      >
+                        Avg Buy Price ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("price")}
+                      >
+                        Latest Price (Live PSX) ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("changePct")}
+                      >
+                        Day Chg ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("activeCostBasis")}
+                      >
+                        Total Cost ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("marketValue")}
+                      >
+                        Market Value ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("weight")}
+                      >
+                        Weight % ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("unrealizedPnL")}
+                      >
+                        Unrealized P&amp;L ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("netDivPaid")}
+                      >
+                        Net Dividends ↕
+                      </th>
+                      <th
+                        className="right"
+                        onClick={() => handleSortHoldings("totalReturn")}
+                      >
+                        Total Return ↕
+                      </th>
+                      <th className="center">Chart</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-white/5 font-mono-num">
-                    {filteredTransactions.map((t) => {
-                      const fees = (t.brkFees || 0) + (t.sst || 0);
-                      const total =
-                        t.action === "Buy"
-                          ? t.shares * t.price + fees
-                          : t.shares * t.price - fees;
+                  <tbody>
+                    {filteredHoldings.map((h) => {
+                      const secCol = getSectorColor(h.sector);
+                      const dayCls =
+                        h.change > 0 ? "pos" : h.change < 0 ? "neg" : "muted";
+                      const priceVsWacCls =
+                        h.wac > 0 ? (h.price >= h.wac ? "pos" : "neg") : "";
                       return (
-                        <tr key={t.id} className="hover:bg-white/[0.03]">
-                          <td className="py-2.5 px-2.5 text-slate-300">
-                            {t.date}
+                        <tr key={h.ticker}>
+                          <td
+                            className="mono fw-700"
+                            style={{
+                              cursor: "pointer",
+                              color: "var(--primary)",
+                            }}
+                            onClick={() => openStockResearch(h.ticker)}
+                          >
+                            {h.ticker}
                           </td>
-                          <td className="py-2.5 px-2.5">
-                            <span className="font-bold text-indigo-300">
-                              {t.ticker}
-                            </span>
-                            <div className="text-[10px] font-sans text-slate-400 truncate max-w-[140px]">
-                              {t.company}
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-2.5">
+                          <td className="fw-600">{h.name}</td>
+                          <td>
                             <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                t.action === "Buy"
-                                  ? "bg-emerald-500/20 text-emerald-300"
-                                  : "bg-rose-500/20 text-rose-300"
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "5px",
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                padding: "2px 8px",
+                                borderRadius: "4px",
+                                background: `${secCol}18`,
+                                color: secCol,
+                                border: `1px solid ${secCol}40`,
+                              }}
+                            >
+                              {h.sector}
+                            </span>
+                          </td>
+                          <td>{h.frequency}</td>
+                          <td className="mono right fw-600">
+                            {fmtNum(h.activeShares)}
+                          </td>
+                          <td className="mono right">
+                            {h.wac > 0 ? "Rs. " + h.wac.toFixed(2) : "—"}
+                          </td>
+                          <td
+                            className={`mono right fw-700 ${priceVsWacCls}`}
+                            title="Live PSX Market Price (Read-Only)"
+                          >
+                            Rs. {h.price.toFixed(2)}
+                          </td>
+                          <td className={`mono right ${dayCls}`}>
+                            {h.change >= 0 ? "+" : ""}
+                            {h.changePct.toFixed(2)}%
+                          </td>
+                          <td className="mono right">
+                            {fmtPKR(h.activeCostBasis, 0)}
+                          </td>
+                          <td className="mono right fw-700">
+                            {fmtPKR(h.marketValue, 0)}
+                          </td>
+                          <td className="mono right">
+                            {h.weight.toFixed(1)}%
+                          </td>
+                          <td
+                            className={`mono right ${
+                              h.unrealizedPnL >= 0 ? "pos" : "neg"
+                            }`}
+                          >
+                            {fmtSignedPKR(h.unrealizedPnL, 0)} (
+                            {h.unrealizedPct >= 0 ? "+" : ""}
+                            {h.unrealizedPct.toFixed(1)}%)
+                          </td>
+                          <td className="mono right pos">
+                            {h.netDivPaid > 0
+                              ? "+" + fmtPKR(h.netDivPaid, 0)
+                              : "—"}
+                          </td>
+                          <td className="mono right">
+                            <span
+                              className={`pnl-pill ${
+                                h.totalReturn >= 0 ? "pnl-pos" : "pnl-neg"
                               }`}
                             >
-                              {t.action}
+                              {fmtSignedPKR(h.totalReturn, 0)} (
+                              {h.totalReturnPct >= 0 ? "+" : ""}
+                              {h.totalReturnPct.toFixed(1)}%)
                             </span>
                           </td>
-                          <td className="py-2.5 px-2.5 text-right font-semibold">
-                            {t.shares.toLocaleString()}
-                          </td>
-                          <td className="py-2.5 px-2.5 text-right">
-                            Rs. {t.price.toFixed(2)}
-                          </td>
-                          <td className="py-2.5 px-2.5 text-right text-slate-400">
-                            Rs. {fees.toFixed(2)}
-                          </td>
-                          <td className="py-2.5 px-2.5 text-right font-semibold">
-                            Rs.{" "}
-                            {total.toLocaleString("en-PK", {
-                              maximumFractionDigits: 2,
-                            })}
-                          </td>
-                          <td className="py-2.5 px-2.5 text-center">
+                          <td className="center">
                             <button
-                              onClick={() =>
-                                handleDeleteTransaction(t.id, t.ticker)
-                              }
-                              className="p-1.5 rounded-lg hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 cursor-pointer"
-                              title="Delete Transaction from Supabase"
+                              className="btn btn-sm btn-primary"
+                              onClick={() => openStockResearch(h.ticker)}
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              Chart
                             </button>
                           </td>
                         </tr>
                       );
                     })}
                   </tbody>
+                  <tfoot>
+                    {(() => {
+                      const sumSh = filteredHoldings.reduce(
+                        (s, r) => s + r.activeShares,
+                        0
+                      );
+                      const sumCost = filteredHoldings.reduce(
+                        (s, r) => s + r.activeCostBasis,
+                        0
+                      );
+                      const sumMV = filteredHoldings.reduce(
+                        (s, r) => s + r.marketValue,
+                        0
+                      );
+                      const sumUnreal = filteredHoldings.reduce(
+                        (s, r) => s + r.unrealizedPnL,
+                        0
+                      );
+                      const sumDiv = filteredHoldings.reduce(
+                        (s, r) => s + r.netDivPaid,
+                        0
+                      );
+                      const sumRet = filteredHoldings.reduce(
+                        (s, r) => s + r.totalReturn,
+                        0
+                      );
+                      return (
+                        <tr>
+                          <td colSpan={4}>
+                            Total ({filteredHoldings.length} Stocks)
+                          </td>
+                          <td className="mono right">{fmtNum(sumSh)}</td>
+                          <td colSpan={3} />
+                          <td className="mono right">{fmtPKR(sumCost, 0)}</td>
+                          <td className="mono right">{fmtPKR(sumMV, 0)}</td>
+                          <td className="mono right">100%</td>
+                          <td
+                            className={`mono right ${
+                              sumUnreal >= 0 ? "pos" : "neg"
+                            }`}
+                          >
+                            {fmtSignedPKR(sumUnreal, 0)}
+                          </td>
+                          <td className="mono right pos">
+                            +{fmtPKR(sumDiv, 0)}
+                          </td>
+                          <td
+                            className={`mono right ${
+                              sumRet >= 0 ? "pos" : "neg"
+                            }`}
+                          >
+                            {fmtSignedPKR(sumRet, 0)}
+                          </td>
+                          <td />
+                        </tr>
+                      );
+                    })()}
+                  </tfoot>
                 </table>
               </div>
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 4: DIVIDEND VAULT & PSX ANNOUNCEMENT MONITOR */}
-        {activeTab === "dividends" && (
-          <div className="space-y-5">
-            <div className="rune-card-rose p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        {/* ===================================================================
+            TAB 3: TRANSACTIONS — FULL SCREEN WIDTH + POPUP MODAL BUTTON
+            =================================================================== */}
+        {activeTab === "transactions" && (
+          <section>
+            <div className="card">
+              <div className="card-header">
                 <div>
-                  <span className="text-[11px] uppercase tracking-widest text-amber-300 font-semibold flex items-center gap-1.5">
-                    <Bell className="w-3.5 h-3.5" /> Automated PSX Corporate
-                    Payout Monitor
-                  </span>
-                  <h3 className="text-base font-bold mt-0.5">
-                    PSX Dividend &amp; Book Closure Announcements (
-                    {state.announcements.length} Detected)
-                  </h3>
-                  <p className="text-xs text-slate-300">
-                    Scraped directly from{" "}
-                    <code className="text-amber-300 font-semibold">
-                      dps.psx.com.pk/company/&#123;SYMBOL&#125;
-                    </code>{" "}
-                    for your held stocks. Queue any announcement to{" "}
-                    <strong>Unpaid</strong> and mark it <strong>Paid</strong>{" "}
-                    when funds hit your bank!
-                  </p>
+                  <div className="card-title">
+                    Buy &amp; Sell Transactions Log (
+                    {computed.transactions.length} Total)
+                  </div>
+                  <div className="card-subtitle">
+                    Complete chronological history with brokerage fees, 15% SST,
+                    and running Weighted Average Cost (WAC)
+                  </div>
                 </div>
-                <button
-                  onClick={() => syncLivePsxQuotes(false)}
-                  disabled={isSyncingPsx}
-                  className="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw
-                    className={`w-3.5 h-3.5 ${
-                      isSyncingPsx ? "animate-spin" : ""
-                    }`}
+                <div className="btn-group">
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Filter ticker, notes..."
+                    value={txSearch}
+                    onChange={(e) => setTxSearch(e.target.value)}
                   />
-                  {isSyncingPsx
-                    ? "Scanning PSX Announcements..."
-                    : "Scan PSX for New Dividend Notices"}
-                </button>
+                  <select
+                    className="select"
+                    value={txActionFilter}
+                    onChange={(e) =>
+                      setTxActionFilter(
+                        e.target.value as typeof txActionFilter
+                      )
+                    }
+                  >
+                    <option value="ALL">All (Buy &amp; Sell)</option>
+                    <option value="Buy">Buys Only</option>
+                    <option value="Sell">Sells Only</option>
+                  </select>
+                  <select
+                    className="select"
+                    value={txMonthFilter}
+                    onChange={(e) => setTxMonthFilter(e.target.value)}
+                  >
+                    <option value="ALL">All Months</option>
+                    {computed.monthly.map((m) => (
+                      <option key={m.ym} value={m.ym}>
+                        {m.ym}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-emerald"
+                    onClick={() => openTxModal(null)}
+                  >
+                    + Add Buy / Sell
+                  </button>
+                </div>
               </div>
 
-              {state.announcements.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[260px] overflow-y-auto pr-1">
-                  {state.announcements.map((ann) => (
-                    <div
-                      key={ann.id}
-                      className="p-3 rounded-xl bg-black/35 border border-white/10 flex flex-col justify-between gap-2"
-                    >
-                      <div>
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-mono-num font-bold text-indigo-300 px-2 py-0.5 rounded bg-indigo-500/20">
-                            {ann.ticker}
-                          </span>
-                          <span className="text-[11px] text-slate-400 font-mono-num">
-                            {ann.announcementDate}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-200 mt-2 line-clamp-2">
-                          {ann.title}
-                        </p>
-                      </div>
-                      <div className="flex items-center justify-between pt-2 border-t border-white/10 text-[11px]">
-                        {ann.pdfUrl ? (
-                          <a
-                            href={ann.pdfUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-indigo-300 hover:underline inline-flex items-center gap-1 font-medium"
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Month</th>
+                      <th>Ticker</th>
+                      <th>Company</th>
+                      <th>Action</th>
+                      <th className="right">Shares</th>
+                      <th className="right">Price / Share</th>
+                      <th className="right">Gross Amount</th>
+                      <th className="right">Brk Fees</th>
+                      <th className="right">SST</th>
+                      <th className="right">Net Cash Flow</th>
+                      <th className="right">Avg Buy Price</th>
+                      <th>Notes</th>
+                      <th className="center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredTransactions.map((tx) => (
+                      <tr key={tx.id}>
+                        <td className="mono">{tx.date}</td>
+                        <td className="mono muted">{tx.ym}</td>
+                        <td
+                          className="mono fw-700"
+                          style={{
+                            color: "var(--primary)",
+                            cursor: "pointer",
+                          }}
+                          onClick={() => openStockResearch(tx.ticker)}
+                        >
+                          {tx.ticker}
+                        </td>
+                        <td className="fw-600">{tx.company}</td>
+                        <td>
+                          <span
+                            className={`status-pill ${
+                              tx.action === "Buy" ? "pill-buy" : "pill-sell"
+                            }`}
                           >
-                            PSX Notice PDF <ExternalLink className="w-3 h-3" />
-                          </a>
-                        ) : (
-                          <span className="text-slate-500">PSX Notice</span>
-                        )}
+                            {tx.action}
+                          </span>
+                        </td>
+                        <td className="mono right fw-600">
+                          {fmtNum(tx.shares)}
+                        </td>
+                        <td className="mono right">
+                          Rs. {tx.price.toFixed(2)}
+                        </td>
+                        <td className="mono right">
+                          {fmtPKR(tx.grossAmount, 2)}
+                        </td>
+                        <td className="mono right muted">
+                          {tx.brkFees.toFixed(2)}
+                        </td>
+                        <td className="mono right muted">
+                          {tx.sst.toFixed(2)}
+                        </td>
+                        <td
+                          className={`mono right ${
+                            tx.netCashFlow >= 0 ? "pos" : "neg"
+                          }`}
+                        >
+                          {fmtSignedPKR(tx.netCashFlow, 2)}
+                        </td>
+                        <td className="mono right">
+                          Rs. {tx.runningWac.toFixed(2)}
+                        </td>
+                        <td>
+                          {tx.notes ? (
+                            <span className="status-pill pill-drip">
+                              {tx.notes}
+                            </span>
+                          ) : (
+                            ""
+                          )}
+                        </td>
+                        <td className="center">
+                          <div
+                            style={{
+                              display: "inline-flex",
+                              gap: "5px",
+                            }}
+                          >
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => openTxModal(tx.id)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="btn btn-sm btn-danger"
+                              onClick={() => deleteTransaction(tx.id)}
+                            >
+                              Del
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    {(() => {
+                      const sumGross = filteredTransactions.reduce(
+                        (s, tx) => s + tx.grossAmount,
+                        0
+                      );
+                      const sumBrk = filteredTransactions.reduce(
+                        (s, tx) => s + tx.brkFees,
+                        0
+                      );
+                      const sumSst = filteredTransactions.reduce(
+                        (s, tx) => s + tx.sst,
+                        0
+                      );
+                      const sumNet = filteredTransactions.reduce(
+                        (s, tx) => s + tx.netCashFlow,
+                        0
+                      );
+                      return (
+                        <tr>
+                          <td colSpan={7}>
+                            Total ({filteredTransactions.length} Transactions)
+                          </td>
+                          <td className="mono right">{fmtPKR(sumGross, 2)}</td>
+                          <td className="mono right">{fmtPKR(sumBrk, 2)}</td>
+                          <td className="mono right">{fmtPKR(sumSst, 2)}</td>
+                          <td
+                            className={`mono right ${
+                              sumNet >= 0 ? "pos" : "neg"
+                            }`}
+                          >
+                            {fmtSignedPKR(sumNet, 2)}
+                          </td>
+                          <td colSpan={3} />
+                        </tr>
+                      );
+                    })()}
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
 
-                        {ann.addedToDividends ? (
-                          <span className="text-emerald-400 font-semibold">
-                            ✓ Added to Dividends
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() =>
-                              handleQueueAnnouncementToDividend(ann)
-                            }
-                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-semibold cursor-pointer"
-                          >
-                            + Queue as Unpaid Dividend
-                          </button>
-                        )}
-                      </div>
+        {/* ===================================================================
+            TAB 4: DIVIDENDS — FULL SCREEN WIDTH + PSX MONITOR + POPUP MODAL
+            =================================================================== */}
+        {activeTab === "dividends" && (
+          <section>
+            {/* Automated PSX Dividend Announcements Monitor Card */}
+            {announcements.filter(
+              (a) => a.isDividend && !a.addedToDividends && (a.parsedDps || 0) > 0
+            ).length > 0 && (
+              <div
+                className="card"
+                style={{
+                  borderTop: "4px solid #d97706",
+                  marginBottom: "18px",
+                }}
+              >
+                <div className="card-header">
+                  <div>
+                    <div className="card-title">
+                      🔔 PSX Live Dividend Announcements Detected (
+                      {
+                        announcements.filter(
+                          (a) =>
+                            a.isDividend &&
+                            !a.addedToDividends &&
+                            (a.parsedDps || 0) > 0
+                        ).length
+                      }{" "}
+                      New)
                     </div>
-                  ))}
+                    <div className="card-subtitle">
+                      Automatically monitored from official Pakistan Stock
+                      Exchange company notices — Click &quot;+ Queue Unpaid
+                      Dividend&quot; to add to your ledger
+                    </div>
+                  </div>
+                </div>
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Ticker</th>
+                        <th>Announcement Title</th>
+                        <th>Period</th>
+                        <th className="right">Announced DPS</th>
+                        <th>Announcement Date</th>
+                        <th className="right">Your Eligible Shares</th>
+                        <th className="center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {announcements
+                        .filter(
+                          (a) =>
+                            a.isDividend &&
+                            !a.addedToDividends &&
+                            (a.parsedDps || 0) > 0
+                        )
+                        .map((ann) => {
+                          const sh =
+                            computed.compMap[ann.ticker]?.activeShares || 0;
+                          return (
+                            <tr key={ann.id} className="div-unpaid-row">
+                              <td
+                                className="mono fw-700"
+                                style={{ color: "var(--primary)" }}
+                              >
+                                {ann.ticker}
+                              </td>
+                              <td className="fw-600">{ann.title}</td>
+                              <td className="mono">
+                                {ann.parsedYear} {ann.parsedTerm}
+                              </td>
+                              <td className="mono right fw-700">
+                                Rs. {(ann.parsedDps || 0).toFixed(2)}
+                              </td>
+                              <td className="mono">{ann.announcementDate}</td>
+                              <td className="mono right">{fmtNum(sh)} sh</td>
+                              <td className="center">
+                                <button
+                                  className="btn btn-sm btn-amber"
+                                  onClick={() =>
+                                    queueAnnouncementAsUnpaidDividend(ann)
+                                  }
+                                >
+                                  + Queue Unpaid Dividend
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">
+                    Dividend Entitlements, Tax Withholding &amp; DRIP
+                    Reinvestment Tracker ({computed.dividends.length} Total)
+                  </div>
+                  <div className="card-subtitle">
+                    Green rows = Paid • Amber rows = Unpaid (Click any{" "}
+                    <b>Unpaid</b> status pill when paid to set the payment date
+                    &amp; mark it Paid)
+                  </div>
+                </div>
+                <div className="btn-group">
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Filter ticker, term..."
+                    value={divSearch}
+                    onChange={(e) => setDivSearch(e.target.value)}
+                  />
+                  <select
+                    className="select"
+                    value={divStatusFilter}
+                    onChange={(e) =>
+                      setDivStatusFilter(
+                        e.target.value as typeof divStatusFilter
+                      )
+                    }
+                  >
+                    <option value="ALL">
+                      All Statuses ({computed.dividends.length})
+                    </option>
+                    <option value="Paid">
+                      Paid Only ({computed.dividends.length - unpaidDivCount})
+                    </option>
+                    <option value="Unpaid">
+                      Unpaid Only ({unpaidDivCount})
+                    </option>
+                  </select>
+                  <select
+                    className="select"
+                    value={divReinvFilter}
+                    onChange={(e) =>
+                      setDivReinvFilter(
+                        e.target.value as typeof divReinvFilter
+                      )
+                    }
+                  >
+                    <option value="ALL">All (Reinvest &amp; Cash)</option>
+                    <option value="Yes">Reinvested (DRIP)</option>
+                    <option value="No">Cash Retained</option>
+                  </select>
+                  <button
+                    className="btn btn-amber"
+                    onClick={() => openDivModal(null)}
+                  >
+                    + Add Dividend
+                  </button>
+                </div>
+              </div>
+
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Payment Date</th>
+                      <th>Month</th>
+                      <th>Ticker</th>
+                      <th>Company</th>
+                      <th>Year</th>
+                      <th>Term</th>
+                      <th className="center">Status</th>
+                      <th className="right">Eligible Shares</th>
+                      <th className="right">Div / Share</th>
+                      <th className="right">Gross Dividend</th>
+                      <th className="right">WHT</th>
+                      <th className="right">Zakat</th>
+                      <th className="right">Net Dividend</th>
+                      <th className="center">Reinvest?</th>
+                      <th>Reinvestment Details</th>
+                      <th className="center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredDividends.map((d) => {
+                      const rowCls =
+                        d.status === "Paid"
+                          ? "div-paid-row"
+                          : "div-unpaid-row";
+                      const pillCls =
+                        d.status === "Paid" ? "pill-paid" : "pill-unpaid";
+                      return (
+                        <tr key={d.id} className={rowCls}>
+                          <td className="mono">{d.paymentDate}</td>
+                          <td className="mono muted">{d.ym}</td>
+                          <td
+                            className="mono fw-700"
+                            style={{
+                              color: "var(--primary)",
+                              cursor: "pointer",
+                            }}
+                            onClick={() => openStockResearch(d.ticker)}
+                          >
+                            {d.ticker}
+                          </td>
+                          <td className="fw-600">{d.company}</td>
+                          <td className="mono">{d.year}</td>
+                          <td className="mono">{d.term}</td>
+                          <td className="center">
+                            <span
+                              className={`status-pill ${pillCls}`}
+                              style={{ cursor: "pointer" }}
+                              onClick={() => handleStatusPillClick(d)}
+                              title={
+                                d.status === "Unpaid"
+                                  ? "Click to mark Paid & set payment date"
+                                  : "Click to mark Unpaid"
+                              }
+                            >
+                              {d.status === "Unpaid"
+                                ? "⏳ Unpaid (Mark Paid)"
+                                : "✓ Paid"}
+                            </span>
+                          </td>
+                          <td className="mono right">
+                            {fmtNum(d.sharesEligible)}
+                          </td>
+                          <td className="mono right">
+                            Rs. {d.dps.toFixed(2)}
+                          </td>
+                          <td className="mono right fw-600">
+                            {fmtPKR(d.grossDividend, 2)}
+                          </td>
+                          <td className="mono right neg">
+                            -{fmtPKR(d.wht, 2)}
+                          </td>
+                          <td
+                            className={`mono right ${
+                              d.zakat > 0 ? "neg" : "muted"
+                            }`}
+                          >
+                            {d.zakat > 0 ? "-" + fmtPKR(d.zakat, 2) : "0.00"}
+                          </td>
+                          <td className="mono right pos">
+                            +{fmtPKR(d.netDividend, 2)}
+                          </td>
+                          <td className="center">
+                            {d.reinvest === "Yes" ? (
+                              <span className="status-pill pill-drip">Yes</span>
+                            ) : (
+                              "No"
+                            )}
+                          </td>
+                          <td>
+                            {d.reinvest === "Yes" ? (
+                              d.matchedDripTx ? (
+                                <span className="status-pill pill-drip">
+                                  Bought {d.matchedDripTx.shares} sh @ Rs.
+                                  {d.matchedDripTx.price} (
+                                  {d.matchedDripTx.date})
+                                </span>
+                              ) : (
+                                <span className="status-pill pill-drip">
+                                  Reinvested
+                                </span>
+                              )
+                            ) : (
+                              <span className="muted">Cash Retained</span>
+                            )}
+                          </td>
+                          <td className="center">
+                            <div
+                              style={{
+                                display: "inline-flex",
+                                gap: "5px",
+                              }}
+                            >
+                              <button
+                                className="btn btn-sm"
+                                onClick={() => openDivModal(d.id)}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="btn btn-sm btn-danger"
+                                onClick={() => deleteDividend(d.id)}
+                              >
+                                Del
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    {(() => {
+                      const sumGross = filteredDividends.reduce(
+                        (s, d) => s + d.grossDividend,
+                        0
+                      );
+                      const sumWht = filteredDividends.reduce(
+                        (s, d) => s + d.wht,
+                        0
+                      );
+                      const sumZakat = filteredDividends.reduce(
+                        (s, d) => s + d.zakat,
+                        0
+                      );
+                      const sumNet = filteredDividends.reduce(
+                        (s, d) => s + d.netDividend,
+                        0
+                      );
+                      return (
+                        <tr>
+                          <td colSpan={9}>
+                            Total ({filteredDividends.length} Dividend Records)
+                          </td>
+                          <td className="mono right">{fmtPKR(sumGross, 2)}</td>
+                          <td className="mono right neg">
+                            -{fmtPKR(sumWht, 2)}
+                          </td>
+                          <td className="mono right neg">
+                            -{fmtPKR(sumZakat, 2)}
+                          </td>
+                          <td className="mono right pos">
+                            +{fmtPKR(sumNet, 2)}
+                          </td>
+                          <td colSpan={3} />
+                        </tr>
+                      );
+                    })()}
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ===================================================================
+            TAB 5: MONTHLY SUMMARY & DIVIDEND PAYOUT CALENDAR MATRIX
+            =================================================================== */}
+        {activeTab === "monthly" && (
+          <section>
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">
+                    Monthly Investment &amp; Dividend Summary
+                  </div>
+                  <div className="card-subtitle">
+                    Exact monthly breakdown of capital invested, sales proceeds,
+                    gross dividends, taxes withheld, and net dividend yield
+                  </div>
+                </div>
+                <label
+                  style={{
+                    fontSize: "12px",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    cursor: "pointer",
+                    fontWeight: 600,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={
+                      state.settings?.includeLegacyMcbInCashflow !== false
+                    }
+                    onChange={(e) => toggleMcbLegacySetting(e.target.checked)}
+                  />
+                  Include MCB Legacy Sale (+Rs. 78,315 on Nov 25, 2025)
+                </label>
+              </div>
+
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Month</th>
+                      <th className="right">Shares Purchased (Cost)</th>
+                      <th className="right">Shares Sold (Proceeds)</th>
+                      <th className="right">Net Cash Invested</th>
+                      <th className="right">Gross Dividend</th>
+                      <th className="right">WHT Deducted</th>
+                      <th className="right">Zakat Deducted</th>
+                      <th className="right">Net Dividend Paid</th>
+                      <th className="right">Monthly Div Yield</th>
+                      <th className="right">Dividends Reinvested</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {computed.monthly.map((m) => {
+                      const includeLegacy =
+                        state.settings?.includeLegacyMcbInCashflow !== false;
+                      const sellIn = includeLegacy
+                        ? m.sellInflow
+                        : m.sellInflowExLegacy;
+                      const netInv = m.buyOutflow - sellIn;
+                      const totMV = t.totalMarketValue || 1;
+                      const yld = (m.netDiv / totMV) * 100;
+                      return (
+                        <tr key={m.ym}>
+                          <td
+                            className="mono fw-700"
+                            style={{ color: "var(--primary)" }}
+                          >
+                            {m.ym}
+                          </td>
+                          <td
+                            className={`mono right ${
+                              m.buyOutflow > 0 ? "neg" : "muted"
+                            }`}
+                          >
+                            {m.buyOutflow > 0
+                              ? "-" + fmtPKR(m.buyOutflow, 2)
+                              : "Rs. 0.00"}
+                          </td>
+                          <td
+                            className={`mono right ${
+                              sellIn > 0 ? "pos" : "muted"
+                            }`}
+                          >
+                            {sellIn > 0
+                              ? "+" + fmtPKR(sellIn, 2)
+                              : "Rs. 0.00"}
+                          </td>
+                          <td className="mono right fw-600">
+                            {fmtPKR(netInv, 2)}
+                          </td>
+                          <td className="mono right">
+                            {fmtPKR(m.grossDiv, 2)}
+                          </td>
+                          <td
+                            className={`mono right ${
+                              m.wht > 0 ? "neg" : "muted"
+                            }`}
+                          >
+                            {m.wht > 0 ? "-" + fmtPKR(m.wht, 2) : "Rs. 0.00"}
+                          </td>
+                          <td
+                            className={`mono right ${
+                              m.zakat > 0 ? "neg" : "muted"
+                            }`}
+                          >
+                            {m.zakat > 0
+                              ? "-" + fmtPKR(m.zakat, 2)
+                              : "Rs. 0.00"}
+                          </td>
+                          <td
+                            className={`mono right ${
+                              m.netDiv > 0 ? "pos" : "muted"
+                            }`}
+                          >
+                            {m.netDiv > 0
+                              ? "+" + fmtPKR(m.netDiv, 2)
+                              : "Rs. 0.00"}
+                          </td>
+                          <td className="mono right">{yld.toFixed(2)}%</td>
+                          <td
+                            className="mono right"
+                            style={{
+                              color: "var(--purple)",
+                              fontWeight: 600,
+                            }}
+                          >
+                            {m.reinvValue > 0
+                              ? fmtPKR(m.reinvValue, 2)
+                              : "Rs. 0.00"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td>Total</td>
+                      <td className="mono right neg">
+                        -{fmtPKR(t.totalBuyOutflow, 2)}
+                      </td>
+                      <td className="mono right pos">
+                        +{fmtPKR(t.effectiveSellInflow, 2)}
+                      </td>
+                      <td className="mono right">
+                        {fmtPKR(t.netCashInvested, 2)}
+                      </td>
+                      <td className="mono right">
+                        {fmtPKR(t.totalGrossDivPaid, 2)}
+                      </td>
+                      <td className="mono right neg">
+                        -{fmtPKR(t.totalWhtPaid, 2)}
+                      </td>
+                      <td className="mono right neg">
+                        -{fmtPKR(t.totalZakatPaid, 2)}
+                      </td>
+                      <td className="mono right pos">
+                        +{fmtPKR(t.totalNetDivPaid, 2)}
+                      </td>
+                      <td className="mono right">
+                        {(
+                          (t.totalNetDivPaid / (t.totalMarketValue || 1)) *
+                          100
+                        ).toFixed(2)}
+                        %
+                      </td>
+                      <td
+                        className="mono right"
+                        style={{ color: "var(--purple)" }}
+                      >
+                        {fmtPKR(t.totalReinvestedDivNet, 2)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+
+            {/* Dividend Payout Calendar Matrix */}
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title">
+                    Dividend Payout Calendar by Stock (Jan – Dec)
+                  </div>
+                  <div className="card-subtitle">
+                    See which months each PSX company pays dividends into your
+                    account
+                  </div>
+                </div>
+              </div>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Ticker</th>
+                      <th>Company</th>
+                      <th>Frequency</th>
+                      {[
+                        "Jan",
+                        "Feb",
+                        "Mar",
+                        "Apr",
+                        "May",
+                        "Jun",
+                        "Jul",
+                        "Aug",
+                        "Sep",
+                        "Oct",
+                        "Nov",
+                        "Dec",
+                      ].map((m) => (
+                        <th key={m} className="right">
+                          {m}
+                        </th>
+                      ))}
+                      <th className="right">Total Net Div</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {computed.holdings
+                      .filter(
+                        (h) => h.netDivPaid > 0 || h.frequency !== "None"
+                      )
+                      .map((h) => {
+                        const mVals = new Array(12).fill(0);
+                        h.divRecords
+                          .filter((d) => d.status === "Paid")
+                          .forEach((d) => {
+                            const idx =
+                              parseInt(d.paymentDate.slice(5, 7), 10) - 1;
+                            if (idx >= 0 && idx < 12)
+                              mVals[idx] += d.netDividend;
+                          });
+                        return (
+                          <tr key={h.ticker}>
+                            <td
+                              className="mono fw-700"
+                              style={{
+                                color: "var(--primary)",
+                                cursor: "pointer",
+                              }}
+                              onClick={() => openStockResearch(h.ticker)}
+                            >
+                              {h.ticker}
+                            </td>
+                            <td className="fw-600">{h.name}</td>
+                            <td>{h.frequency}</td>
+                            {mVals.map((v, idx) => (
+                              <td
+                                key={idx}
+                                className={`mono right ${
+                                  v > 0 ? "pos" : "muted"
+                                }`}
+                              >
+                                {v > 0
+                                  ? "+" + Math.round(v).toLocaleString()
+                                  : "—"}
+                              </td>
+                            ))}
+                            <td className="mono right pos">
+                              +{fmtPKR(h.netDivPaid, 0)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ===================================================================
+            TAB 6: PSX STOCK CHARTS & LINKS
+            =================================================================== */}
+        {activeTab === "research" && selectedStock && (
+          <section>
+            <div className="card">
+              <div className="card-header">
+                <div className="btn-group">
+                  <label className="fw-700">Select PSX Stock:</label>
+                  <select
+                    className="select"
+                    value={researchTicker}
+                    onChange={(e) => setResearchTicker(e.target.value)}
+                  >
+                    {sortedTickers.map((h) => (
+                      <option key={h.ticker} value={h.ticker}>
+                        {h.ticker} — {h.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className={
+                      researchChartMode === "custom"
+                        ? "btn btn-sm btn-primary"
+                        : "btn btn-sm"
+                    }
+                    onClick={() => setResearchChartMode("custom")}
+                  >
+                    📊 Position &amp; Price Chart
+                  </button>
+                  <button
+                    className={
+                      researchChartMode === "psx"
+                        ? "btn btn-sm btn-primary"
+                        : "btn btn-sm"
+                    }
+                    onClick={() => setResearchChartMode("psx")}
+                  >
+                    🏛️ Live Official PSX Portal Page
+                  </button>
+                </div>
+                <div className="btn-group">
+                  <a
+                    className="btn btn-sm btn-primary"
+                    href={`https://www.tradingview.com/chart/?symbol=PSX%3A${selectedStock.ticker}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    📈 Open PSX:{selectedStock.ticker} on TradingView ↗
+                  </a>
+                  <a
+                    className="btn btn-sm"
+                    href={`https://dps.psx.com.pk/company/${selectedStock.ticker}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    🏛️ Official PSX Page ({selectedStock.ticker}) ↗
+                  </a>
+                  <a
+                    className="btn btn-sm"
+                    href={`https://sarmaya.pk/psx/stock/${selectedStock.ticker}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    💎 Sarmaya.pk ↗
+                  </a>
+                </div>
+              </div>
+
+              {/* Selected Stock KPI Strip */}
+              <div
+                style={{
+                  padding: "14px 20px",
+                  borderBottom: "1px solid var(--border)",
+                  background: "var(--bg-subtle)",
+                }}
+              >
+                <div className="kpi-row" style={{ marginBottom: 0 }}>
+                  <div
+                    className="kpi-box"
+                    style={
+                      {
+                        padding: "12px 16px",
+                        "--kpi-color": "#2563eb",
+                      } as React.CSSProperties
+                    }
+                  >
+                    <div className="kpi-title">Live PSX Price</div>
+                    <div className="kpi-main" style={{ fontSize: "19px" }}>
+                      Rs. {selectedStock.price.toFixed(2)}
+                    </div>
+                    <div className="kpi-foot">
+                      <span>LDCP: Rs.{selectedStock.ldcp.toFixed(2)}</span>
+                      <span
+                        className={selectedStock.change >= 0 ? "pos" : "neg"}
+                      >
+                        {selectedStock.change >= 0 ? "+" : ""}
+                        {selectedStock.changePct.toFixed(2)}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    className="kpi-box"
+                    style={
+                      {
+                        padding: "12px 16px",
+                        "--kpi-color": "#d97706",
+                      } as React.CSSProperties
+                    }
+                  >
+                    <div className="kpi-title">Your Avg Buy Price</div>
+                    <div className="kpi-main" style={{ fontSize: "19px" }}>
+                      Rs. {selectedStock.wac.toFixed(2)}
+                    </div>
+                    <div className="kpi-foot">
+                      <span>Shares Held</span>
+                      <span className="mono fw-700">
+                        {fmtNum(selectedStock.activeShares)} sh
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    className="kpi-box"
+                    style={
+                      {
+                        padding: "12px 16px",
+                        "--kpi-color": "#4f46e5",
+                      } as React.CSSProperties
+                    }
+                  >
+                    <div className="kpi-title">Market Value</div>
+                    <div className="kpi-main" style={{ fontSize: "19px" }}>
+                      {fmtPKR(selectedStock.marketValue, 0)}
+                    </div>
+                    <div className="kpi-foot">
+                      <span>Cost Basis</span>
+                      <span className="mono">
+                        {fmtPKR(selectedStock.activeCostBasis, 0)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    className="kpi-box"
+                    style={
+                      {
+                        padding: "12px 16px",
+                        "--kpi-color":
+                          selectedStock.unrealizedPnL >= 0
+                            ? "#059669"
+                            : "#dc2626",
+                      } as React.CSSProperties
+                    }
+                  >
+                    <div className="kpi-title">Unrealized P&amp;L</div>
+                    <div
+                      className={`kpi-main ${
+                        selectedStock.unrealizedPnL >= 0 ? "pos" : "neg"
+                      }`}
+                      style={{ fontSize: "19px" }}
+                    >
+                      {fmtSignedPKR(selectedStock.unrealizedPnL, 0)}
+                    </div>
+                    <div className="kpi-foot">
+                      <span>Return %</span>
+                      <span
+                        className={
+                          selectedStock.unrealizedPnL >= 0 ? "pos" : "neg"
+                        }
+                      >
+                        {selectedStock.unrealizedPct >= 0 ? "+" : ""}
+                        {selectedStock.unrealizedPct.toFixed(2)}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    className="kpi-box"
+                    style={
+                      {
+                        padding: "12px 16px",
+                        "--kpi-color": "#059669",
+                      } as React.CSSProperties
+                    }
+                  >
+                    <div className="kpi-title">Net Dividends + Cap P&amp;L</div>
+                    <div
+                      className={`kpi-main ${
+                        selectedStock.totalReturn >= 0 ? "pos" : "neg"
+                      }`}
+                      style={{ fontSize: "19px" }}
+                    >
+                      {fmtSignedPKR(selectedStock.totalReturn, 0)}
+                    </div>
+                    <div className="kpi-foot">
+                      <span>Net Divs Paid</span>
+                      <span className="pos">
+                        +{fmtPKR(selectedStock.netDivPaid, 0)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Chart or Official PSX Portal iframe */}
+              {researchChartMode === "psx" ? (
+                <div style={{ padding: 0 }}>
+                  <iframe
+                    src={`https://dps.psx.com.pk/company/${selectedStock.ticker}`}
+                    style={{
+                      width: "100%",
+                      height: "480px",
+                      border: "none",
+                    }}
+                    title={`PSX ${selectedStock.ticker}`}
+                  />
                 </div>
               ) : (
-                <div className="text-xs text-slate-300 py-4 px-4 rounded-xl bg-black/25 border border-white/5">
-                  Click{" "}
-                  <strong>
-                    &ldquo;Scan PSX for New Dividend Notices&rdquo;
-                  </strong>{" "}
-                  above to scrape live corporate dividend &amp; book-closure
-                  notices across all 27 PSX companies.
+                <div className="card-body" style={{ minHeight: "380px" }}>
+                  <StockPositionSvgChart stock={selectedStock} />
                 </div>
               )}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              <div className="lg:col-span-4">
-                <form
-                  onSubmit={handleAddDividend}
-                  className="rune-card p-5 space-y-3.5"
-                >
+            {/* Side-by-Side Buy/Sell Lots & Dividend History for Selected Stock */}
+            <div className="grid-equal">
+              <div className="card">
+                <div className="card-header">
                   <div>
-                    <span className="text-[11px] uppercase tracking-widest text-amber-400 font-semibold">
-                      Dividend Income Log
-                    </span>
-                    <h3 className="text-base font-bold mt-0.5">
-                      Add Announced or Paid Dividend
-                    </h3>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        PSX Ticker
-                      </label>
-                      <select
-                        value={divTicker}
-                        onChange={(e) => handleSelectDivTicker(e.target.value)}
-                        className="rune-input w-full text-xs font-mono-num"
-                      >
-                        {state.companies.map((c) => (
-                          <option key={c.ticker} value={c.ticker}>
-                            {c.ticker} — {c.name}
-                          </option>
-                        ))}
-                      </select>
+                    <div className="card-title">
+                      Buy / Sell Orders for {selectedStock.ticker} (
+                      {selectedStock.lots.length})
                     </div>
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        Payout Status
-                      </label>
-                      <select
-                        value={divStatus}
-                        onChange={(e) =>
-                          setDivStatus(e.target.value as "Paid" | "Unpaid")
-                        }
-                        className="rune-input w-full text-xs font-semibold"
-                      >
-                        <option value="Unpaid">
-                          Unpaid (Announced / Book Closure)
-                        </option>
-                        <option value="Paid">Paid (Credited to Bank)</option>
-                      </select>
+                    <div className="card-subtitle">
+                      Every purchase lot vs. current market price and Average
+                      Buy Price (WAC)
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        Date
-                      </label>
-                      <input
-                        type="date"
-                        value={divPayDate}
-                        onChange={(e) => setDivPayDate(e.target.value)}
-                        className="rune-input w-full font-mono-num text-xs"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        Year
-                      </label>
-                      <input
-                        type="text"
-                        value={divYear}
-                        onChange={(e) => setDivYear(e.target.value)}
-                        className="rune-input w-full font-mono-num text-xs"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        Term
-                      </label>
-                      <select
-                        value={divTerm}
-                        onChange={(e) => setDivTerm(e.target.value)}
-                        className="rune-input w-full text-xs font-mono-num"
-                      >
-                        <option value="Q1">Q1</option>
-                        <option value="HYR">HYR</option>
-                        <option value="Q3">Q3</option>
-                        <option value="YR">YR (Final)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        Eligible Shares
-                      </label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={divShares}
-                        onChange={(e) => setDivShares(e.target.value)}
-                        className="rune-input w-full font-mono-num text-xs"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        Dividend / Share (PKR)
-                      </label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={divDps}
-                        onChange={(e) => setDivDps(e.target.value)}
-                        className="rune-input w-full font-mono-num text-xs"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        15% WHT Tax (PKR)
-                      </label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={divWht}
-                        onChange={(e) => setDivWht(e.target.value)}
-                        className="rune-input w-full font-mono-num text-xs"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-slate-400 block mb-1">
-                        Zakat Deducted (PKR)
-                      </label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={divZakat}
-                        onChange={(e) => setDivZakat(e.target.value)}
-                        className="rune-input w-full font-mono-num text-xs"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Save Dividend Record
-                  </button>
-                </form>
-              </div>
-
-              <div className="lg:col-span-8 rune-card p-5">
-                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                  <div>
-                    <h3 className="text-base font-bold">
-                      Dividend Payout Ledger ({filteredDividends.length} records)
-                    </h3>
-                    <p className="text-xs text-slate-400">
-                      When an announced dividend is credited to your bank, click{" "}
-                      <strong>&ldquo;Mark Paid&rdquo;</strong> to set the
-                      payment date.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={divSearch}
-                      onChange={(e) => setDivSearch(e.target.value)}
-                      placeholder="Filter ticker..."
-                      className="rune-input text-xs w-36"
-                    />
-                    <select
-                      value={divStatusFilter}
-                      onChange={(e) => setDivStatusFilter(e.target.value)}
-                      className="rune-input text-xs"
-                    >
-                      <option value="ALL">All Statuses</option>
-                      <option value="Paid">Paid Only</option>
-                      <option value="Unpaid">Unpaid / Announced Only</option>
-                    </select>
                   </div>
                 </div>
-
-                <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead className="sticky top-0 bg-[#0f1117] z-10">
-                      <tr className="border-b border-white/10 text-slate-400 uppercase text-[10px]">
-                        <th className="py-2.5 px-2.5">Status / Action</th>
-                        <th className="py-2.5 px-2.5">Payment Date</th>
-                        <th className="py-2.5 px-2.5">Ticker &amp; Term</th>
-                        <th className="py-2.5 px-2.5 text-right">Shares</th>
-                        <th className="py-2.5 px-2.5 text-right">DPS</th>
-                        <th className="py-2.5 px-2.5 text-right">Gross</th>
-                        <th className="py-2.5 px-2.5 text-right">WHT+Zakat</th>
-                        <th className="py-2.5 px-2.5 text-right">Net Cash</th>
-                        <th className="py-2.5 px-2.5 text-center">Del</th>
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Action</th>
+                        <th className="right">Shares</th>
+                        <th className="right">Trade Price</th>
+                        <th className="right">Current vs Trade</th>
+                        <th className="right">Net Cash Flow</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-white/5 font-mono-num">
-                      {filteredDividends.map((d) => {
-                        const gross = d.sharesEligible * d.dps;
-                        const net = Math.max(0, gross - d.wht - d.zakat);
+                    <tbody>
+                      {selectedStock.lots.map((l) => {
+                        const diffPerSh = selectedStock.price - l.price;
+                        const lotPnl =
+                          l.action === "Buy" ? diffPerSh * l.shares : 0;
                         return (
-                          <tr key={d.id} className="hover:bg-white/[0.03]">
-                            <td className="py-2.5 px-2.5">
-                              {d.status === "Paid" ? (
-                                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                                  ✓ PAID
-                                </span>
-                              ) : (
-                                <button
-                                  onClick={() => {
-                                    setMarkPaidModalDiv(d);
-                                    setMarkPaidDate(
-                                      new Date().toISOString().slice(0, 10)
-                                    );
-                                  }}
-                                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-emerald-500/30 text-amber-300 hover:text-emerald-200 border border-amber-500/40 text-[10px] font-bold cursor-pointer transition-all"
-                                >
-                                  UNPAID → Mark Paid
-                                </button>
-                              )}
-                            </td>
-                            <td className="py-2.5 px-2.5 text-slate-300">
-                              {d.paymentDate ||
-                                d.announcementDate ||
-                                "Awaiting Credit"}
-                            </td>
-                            <td className="py-2.5 px-2.5">
-                              <span className="font-bold text-indigo-300">
-                                {d.ticker}
-                              </span>{" "}
-                              <span className="text-slate-400 text-[10px]">
-                                ({d.term} {d.year})
+                          <tr key={l.id}>
+                            <td className="mono">{l.date}</td>
+                            <td>
+                              <span
+                                className={`status-pill ${
+                                  l.action === "Buy" ? "pill-buy" : "pill-sell"
+                                }`}
+                              >
+                                {l.action}
                               </span>
                             </td>
-                            <td className="py-2.5 px-2.5 text-right">
-                              {d.sharesEligible.toLocaleString()}
+                            <td className="mono right fw-600">
+                              {fmtNum(l.shares)}
                             </td>
-                            <td className="py-2.5 px-2.5 text-right">
-                              Rs. {d.dps.toFixed(2)}
+                            <td className="mono right">
+                              Rs. {l.price.toFixed(2)}
                             </td>
-                            <td className="py-2.5 px-2.5 text-right text-slate-300">
-                              Rs. {Math.round(gross).toLocaleString()}
+                            <td
+                              className={`mono right ${
+                                lotPnl >= 0 ? "pos" : "neg"
+                              }`}
+                            >
+                              {l.action === "Buy"
+                                ? fmtSignedPKR(lotPnl, 0)
+                                : "—"}
                             </td>
-                            <td className="py-2.5 px-2.5 text-right text-rose-400">
-                              Rs. {Math.round(d.wht + d.zakat).toLocaleString()}
-                            </td>
-                            <td className="py-2.5 px-2.5 text-right font-bold text-emerald-400">
-                              Rs. {Math.round(net).toLocaleString()}
-                            </td>
-                            <td className="py-2.5 px-2.5 text-center">
-                              <button
-                                onClick={() =>
-                                  handleDeleteDividend(d.id, d.ticker)
-                                }
-                                className="p-1.5 rounded-lg hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 cursor-pointer"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                            <td
+                              className={`mono right ${
+                                l.netCashFlow >= 0 ? "pos" : "neg"
+                              }`}
+                            >
+                              {fmtSignedPKR(l.netCashFlow, 2)}
                             </td>
                           </tr>
                         );
@@ -1835,285 +3199,1278 @@ export default function HomePage() {
                   </table>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
 
-        {/* TAB 5: PSX COMPANY DIRECTORY & CLOUD BACKUP */}
-        {activeTab === "companies" && (
-          <div className="space-y-5">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              <div className="lg:col-span-4 space-y-4">
-                <form
-                  onSubmit={handleAddCompany}
-                  className="rune-card p-5 space-y-3.5"
-                >
+              <div className="card">
+                <div className="card-header">
                   <div>
-                    <span className="text-[11px] uppercase tracking-widest text-cyan-400 font-semibold">
-                      Auto-Scrape from PSX
-                    </span>
-                    <h3 className="text-base font-bold mt-0.5">
-                      Add New PSX Company Ticker
-                    </h3>
-                    <p className="text-xs text-slate-400">
-                      Enter any PSX symbol (e.g.{" "}
-                      <code className="text-indigo-300 font-semibold">
-                        LUCK
-                      </code>
-                      ,{" "}
-                      <code className="text-indigo-300 font-semibold">SYS</code>
-                      ,{" "}
-                      <code className="text-indigo-300 font-semibold">
-                        MARI
-                      </code>
-                      ) and our server will automatically pull its live price,
-                      sector, 52W range, and dividend notices!
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      PSX Ticker Symbol
-                    </label>
-                    <input
-                      type="text"
-                      value={newCompTicker}
-                      onChange={(e) =>
-                        setNewCompTicker(e.target.value.toUpperCase())
-                      }
-                      placeholder="e.g. LUCK"
-                      className="rune-input w-full font-mono-num text-xs uppercase"
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      Company Name (Optional — Auto-Detected)
-                    </label>
-                    <input
-                      type="text"
-                      value={newCompName}
-                      onChange={(e) => setNewCompName(e.target.value)}
-                      placeholder="Auto-fetched from dps.psx.com.pk"
-                      className="rune-input w-full text-xs"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">
-                      Dividend Payout Frequency
-                    </label>
-                    <select
-                      value={newCompFreq}
-                      onChange={(e) => setNewCompFreq(e.target.value)}
-                      className="rune-input w-full text-xs"
-                    >
-                      <option value="Quarterly">Quarterly</option>
-                      <option value="Semi-Annual">Semi-Annual</option>
-                      <option value="Annual">Annual</option>
-                      <option value="None">None</option>
-                    </select>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isAddingCompany}
-                    className="w-full py-2.5 px-4 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    {isAddingCompany
-                      ? "Scraping PSX Portal..."
-                      : "Add Ticker & Fetch Live Quote"}
-                  </button>
-                </form>
-
-                <div className="rune-card p-5 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Cloud className="w-4 h-4 text-emerald-400" />
-                    <h4 className="text-sm font-bold">
-                      Supabase Cloud &amp; JSON Backup
-                    </h4>
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    All changes are stored in your Supabase PostgreSQL database
-                    and broadcast via WebSockets to every open browser.
-                  </p>
-                  <div className="flex flex-col gap-2">
-                    <button
-                      onClick={handleExportJson}
-                      className="w-full py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      Download Full JSON Snapshot
-                    </button>
-                    <button
-                      onClick={async () => {
-                        await forceReseedSupabase();
-                        await reloadFromSupabase();
-                        setToastAlert({
-                          title: "Verified Seed Portfolio",
-                          subtitle:
-                            "All 27 companies, 99 trades, and 34 dividends verified in Supabase.",
-                        });
-                      }}
-                      className="w-full py-2 px-3 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 text-xs font-medium flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Filter className="w-3.5 h-3.5" />
-                      Re-Verify Base Excel Seed in Supabase
-                    </button>
+                    <div className="card-title">
+                      Dividends Received for {selectedStock.ticker} (
+                      {selectedStock.divRecords.length})
+                    </div>
+                    <div className="card-subtitle">
+                      Historical dividend payouts and tax deductions for this
+                      stock
+                    </div>
                   </div>
                 </div>
-              </div>
-
-              <div className="lg:col-span-8 rune-card p-5">
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-                  <div>
-                    <h3 className="text-base font-bold">
-                      Monitored PSX Companies ({state.companies.length})
-                    </h3>
-                    <p className="text-xs text-slate-400">
-                      Live prices are fetched directly from{" "}
-                      <code>dps.psx.com.pk</code> and are strictly read-only.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto max-h-[620px] overflow-y-auto">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead className="sticky top-0 bg-[#0f1117] z-10">
-                      <tr className="border-b border-white/10 text-slate-400 uppercase text-[10px]">
-                        <th className="py-2.5 px-2.5">Ticker / Name</th>
-                        <th className="py-2.5 px-2.5">Sector</th>
-                        <th className="py-2.5 px-2.5 text-right">
-                          Live PSX Price
-                        </th>
-                        <th className="py-2.5 px-2.5 text-right">Day Change</th>
-                        <th className="py-2.5 px-2.5 text-right">52W Range</th>
-                        <th className="py-2.5 px-2.5 text-right">Volume</th>
-                        <th className="py-2.5 px-2.5 text-right">P/E</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5 font-mono-num">
-                      {state.companies.map((c) => (
-                        <tr
-                          key={c.ticker}
-                          onClick={() => setModalTicker(c.ticker)}
-                          className="hover:bg-white/[0.03] cursor-pointer"
-                        >
-                          <td className="py-2.5 px-2.5 font-sans">
-                            <div className="font-mono-num font-bold text-indigo-300">
-                              {c.ticker}
-                            </div>
-                            <div className="text-[11px] text-slate-400">
-                              {c.name}
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-2.5 font-sans text-[11px] text-slate-300">
-                            {c.sector}
-                          </td>
-                          <td className="py-2.5 px-2.5 text-right font-bold">
-                            Rs. {c.price.toFixed(2)}
-                          </td>
-                          <td
-                            className={`py-2.5 px-2.5 text-right font-semibold ${
-                              c.change >= 0
-                                ? "text-emerald-400"
-                                : "text-rose-400"
-                            }`}
-                          >
-                            {c.change >= 0 ? "+" : ""}
-                            {c.change.toFixed(2)} ({c.changePct.toFixed(2)}%)
-                          </td>
-                          <td className="py-2.5 px-2.5 text-right text-slate-300 text-[11px]">
-                            {c.high52}
-                          </td>
-                          <td className="py-2.5 px-2.5 text-right text-slate-400">
-                            {c.volume}
-                          </td>
-                          <td className="py-2.5 px-2.5 text-right text-slate-300">
-                            {c.pe}
-                          </td>
+                <div className="table-container">
+                  {selectedStock.divRecords.length > 0 ? (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Period</th>
+                          <th className="center">Status</th>
+                          <th className="right">Shares</th>
+                          <th className="right">DPS</th>
+                          <th className="right">WHT/Zakat</th>
+                          <th className="right">Net Dividend</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {selectedStock.divRecords.map((d) => (
+                          <tr
+                            key={d.id}
+                            className={
+                              d.status === "Paid"
+                                ? "div-paid-row"
+                                : "div-unpaid-row"
+                            }
+                          >
+                            <td className="mono">{d.paymentDate}</td>
+                            <td className="mono">
+                              {d.year} {d.term}
+                            </td>
+                            <td className="center">
+                              <span
+                                className={`status-pill ${
+                                  d.status === "Paid"
+                                    ? "pill-paid"
+                                    : "pill-unpaid"
+                                }`}
+                              >
+                                {d.status}
+                              </span>
+                            </td>
+                            <td className="mono right">
+                              {fmtNum(d.sharesEligible)}
+                            </td>
+                            <td className="mono right">
+                              Rs. {d.dps.toFixed(2)}
+                            </td>
+                            <td className="mono right neg">
+                              -{fmtPKR(d.wht + d.zakat, 0)}
+                            </td>
+                            <td className="mono right pos">
+                              +{fmtPKR(d.netDividend, 2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div
+                      style={{
+                        padding: "24px",
+                        color: "var(--text-muted)",
+                        textAlign: "center",
+                      }}
+                    >
+                      No dividend payouts recorded yet for{" "}
+                      {selectedStock.ticker}.
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-          </div>
+          </section>
         )}
       </main>
 
-      {/* Mark Dividend as Paid Modal */}
-      {markPaidModalDiv && (
+      {/* =====================================================================
+          POPUP MODAL 1: ADD / EDIT BUY OR SELL TRANSACTION
+          ===================================================================== */}
+      {txModalOpen && (
         <div
-          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={() => setMarkPaidModalDiv(null)}
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setTxModalOpen(false);
+          }}
         >
-          <div
-            className="rune-card-rose w-full max-w-md p-6 space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-lg font-bold">
-              Confirm Dividend Payout Received ({markPaidModalDiv.ticker})
-            </h3>
-            <p className="text-xs text-slate-300">
-              Select the date this dividend was credited to your bank account.
-              Status will switch from <strong>Unpaid</strong> to{" "}
-              <strong>Paid</strong> across all connected devices.
-            </p>
-            <div className="p-3 rounded-xl bg-black/30 border border-white/10 text-xs font-mono-num space-y-1">
-              <div>
-                Eligible Shares:{" "}
-                <strong>{markPaidModalDiv.sharesEligible}</strong> × DPS{" "}
-                <strong>Rs. {markPaidModalDiv.dps.toFixed(2)}</strong>
+          <div className="modal-box">
+            <div className="card-header">
+              <div className="card-title">
+                {txEditId !== null
+                  ? "Edit Buy / Sell Transaction"
+                  : "Add Buy / Sell Transaction"}
               </div>
-              <div className="text-emerald-400 font-bold">
-                Net Cash Credited: Rs.{" "}
-                {Math.round(
-                  markPaidModalDiv.sharesEligible * markPaidModalDiv.dps -
-                    markPaidModalDiv.wht -
-                    markPaidModalDiv.zakat
-                ).toLocaleString()}
+              <button
+                className="btn btn-sm"
+                onClick={() => setTxModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="card-body">
+              <div className="form-grid">
+                <div className="form-field">
+                  <label>Trade Date</label>
+                  <input
+                    type="date"
+                    className="input mono"
+                    value={txDate}
+                    onChange={(e) => setTxDate(e.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Ticker Symbol</label>
+                  <select
+                    className="select"
+                    value={txTicker}
+                    onChange={(e) => handleTxTickerChange(e.target.value)}
+                  >
+                    {sortedTickers.map((h) => (
+                      <option key={h.ticker} value={h.ticker}>
+                        {h.ticker} — {h.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-field">
+                  <label>Action (Buy / Sell)</label>
+                  <select
+                    className="select"
+                    value={txAction}
+                    onChange={(e) =>
+                      setTxAction(e.target.value as "Buy" | "Sell")
+                    }
+                  >
+                    <option value="Buy">Buy (Add Shares)</option>
+                    <option value="Sell">Sell (Reduce Shares)</option>
+                  </select>
+                </div>
+                <div className="form-field">
+                  <label>Notes (e.g. Dividend Reinvest, IPO, Stock Splits)</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Dividend Reinvest / IPO"
+                    value={txNotes}
+                    onChange={(e) =>
+                      handleTxSharesOrPriceOrNotesChange(
+                        txShares,
+                        txPrice,
+                        e.target.value
+                      )
+                    }
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Number of Shares</label>
+                  <input
+                    type="number"
+                    step="1"
+                    className="input mono"
+                    placeholder="e.g. 100"
+                    value={txShares}
+                    onChange={(e) =>
+                      handleTxSharesOrPriceOrNotesChange(
+                        e.target.value,
+                        txPrice,
+                        txNotes
+                      )
+                    }
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Price per Share (Rs.)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input mono"
+                    placeholder="e.g. 215.50"
+                    value={txPrice}
+                    onChange={(e) =>
+                      handleTxSharesOrPriceOrNotesChange(
+                        txShares,
+                        e.target.value,
+                        txNotes
+                      )
+                    }
+                  />
+                </div>
+                <div className="form-field">
+                  <label>
+                    Brokerage Fee (Rs.)
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ padding: "1px 6px", marginLeft: "6px" }}
+                      onClick={() =>
+                        handleTxSharesOrPriceOrNotesChange(
+                          txShares,
+                          txPrice,
+                          txNotes,
+                          true
+                        )
+                      }
+                    >
+                      Auto
+                    </button>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input mono"
+                    value={txBrk}
+                    onChange={(e) => setTxBrk(e.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>SST 15% on Brokerage (Rs.)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input mono"
+                    value={txSst}
+                    onChange={(e) => setTxSst(e.target.value)}
+                  />
+                </div>
+                <div
+                  className="form-field full"
+                  style={{
+                    background: "var(--bg-subtle)",
+                    padding: "12px",
+                    borderRadius: "6px",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  {(() => {
+                    const sh = Number(txShares) || 0;
+                    const pr = Number(txPrice) || 0;
+                    const brk = Number(txBrk) || 0;
+                    const sst = Number(txSst) || 0;
+                    const gross = sh * pr;
+                    const net =
+                      txAction === "Buy"
+                        ? -(gross + brk + sst)
+                        : gross - brk - sst;
+                    return (
+                      <div className="mono" style={{ fontSize: "12.5px" }}>
+                        Gross: <b>{fmtPKR(gross, 2)}</b> | Fees:{" "}
+                        <b>{fmtPKR(brk + sst, 2)}</b> | Net Cash Flow:{" "}
+                        <b className={net >= 0 ? "pos" : "neg"}>
+                          {fmtSignedPKR(net, 2)}
+                        </b>
+                      </div>
+                    );
+                  })()}
+                </div>
               </div>
-            </div>
-            <div>
-              <label className="text-xs text-slate-300 block mb-1">
-                Bank Credit / Payment Date
-              </label>
-              <input
-                type="date"
-                value={markPaidDate}
-                onChange={(e) => setMarkPaidDate(e.target.value)}
-                className="rune-input w-full font-mono-num text-sm"
-              />
-            </div>
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                onClick={() => setMarkPaidModalDiv(null)}
-                className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs cursor-pointer"
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: "10px",
+                  marginTop: "18px",
+                }}
               >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmMarkPaid}
-                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer"
-              >
-                ✓ Mark as Paid
-              </button>
+                <button
+                  className="btn"
+                  onClick={() => setTxModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-emerald"
+                  onClick={saveTxForm}
+                  disabled={txSaving}
+                >
+                  {txSaving ? "Saving..." : "Save Transaction"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Stock Deep-Dive Modal */}
-      <StockDetailModal
-        position={selectedModalPosition}
-        dividends={state.dividends}
-        announcements={state.announcements}
-        onClose={() => setModalTicker(null)}
+      {/* =====================================================================
+          POPUP MODAL 2: ADD / EDIT DIVIDEND PAYMENT
+          ===================================================================== */}
+      {divModalOpen && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setDivModalOpen(false);
+          }}
+        >
+          <div className="modal-box">
+            <div className="card-header">
+              <div className="card-title">
+                {divEditId !== null
+                  ? "Edit Dividend Payment"
+                  : "Add Dividend Payment"}
+              </div>
+              <button
+                className="btn btn-sm"
+                onClick={() => setDivModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="card-body">
+              <div className="form-grid">
+                <div className="form-field">
+                  <label>Payment Date</label>
+                  <input
+                    type="date"
+                    className="input mono"
+                    value={divDate}
+                    onChange={(e) => {
+                      const d = e.target.value;
+                      setDivDate(d);
+                      if (divEditId === null) {
+                        setDivShares(
+                          String(calcEligibleSharesOnDate(divTicker, d))
+                        );
+                      }
+                    }}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Ticker Symbol</label>
+                  <select
+                    className="select"
+                    value={divTicker}
+                    onChange={(e) => {
+                      const s = e.target.value;
+                      setDivTicker(s);
+                      if (divEditId === null) {
+                        setDivShares(
+                          String(calcEligibleSharesOnDate(s, divDate))
+                        );
+                      }
+                    }}
+                  >
+                    {sortedTickers.map((h) => (
+                      <option key={h.ticker} value={h.ticker}>
+                        {h.ticker} — {h.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-field">
+                  <label>Year</label>
+                  <input
+                    type="text"
+                    className="input mono"
+                    value={divYear}
+                    onChange={(e) => setDivYear(e.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Dividend Term</label>
+                  <select
+                    className="select"
+                    value={divTerm}
+                    onChange={(e) => setDivTerm(e.target.value)}
+                  >
+                    <option value="Interim I">Interim I</option>
+                    <option value="Interim II">Interim II</option>
+                    <option value="Interim III">Interim III</option>
+                    <option value="Final">Final</option>
+                  </select>
+                </div>
+                <div className="form-field">
+                  <label>
+                    Eligible Shares
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ padding: "1px 6px", marginLeft: "6px" }}
+                      onClick={() =>
+                        setDivShares(
+                          String(calcEligibleSharesOnDate(divTicker, divDate))
+                        )
+                      }
+                    >
+                      Auto-Fill Held
+                    </button>
+                  </label>
+                  <input
+                    type="number"
+                    step="1"
+                    className="input mono"
+                    value={divShares}
+                    onChange={(e) => setDivShares(e.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Dividend per Share (DPS Rs.)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input mono"
+                    placeholder="e.g. 5.00"
+                    value={divDps}
+                    onChange={(e) => setDivDps(e.target.value)}
+                  />
+                </div>
+                <div className="form-field full">
+                  <label>Quick WHT Tax Calculation:</label>
+                  <div className="btn-group">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => applyDivWhtPreset(15)}
+                    >
+                      15% Standard Filer
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => applyDivWhtPreset(7.5)}
+                    >
+                      7.5% IPP Power
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => applyDivWhtPreset(25)}
+                    >
+                      25% REIT / Fund
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => applyDivWhtPreset(0)}
+                    >
+                      0% Exempt
+                    </button>
+                  </div>
+                </div>
+                <div className="form-field">
+                  <label>Withholding Tax WHT (Rs.)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input mono"
+                    value={divWht}
+                    onChange={(e) => setDivWht(e.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Zakat Deducted (Rs.)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input mono"
+                    value={divZakat}
+                    onChange={(e) => setDivZakat(e.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Payment Status</label>
+                  <select
+                    className="select"
+                    value={divStatus}
+                    onChange={(e) =>
+                      setDivStatus(e.target.value as "Paid" | "Unpaid")
+                    }
+                  >
+                    <option value="Paid">Paid (Received in Bank)</option>
+                    <option value="Unpaid">Unpaid (Announced / Pending)</option>
+                  </select>
+                </div>
+                <div className="form-field">
+                  <label>Reinvested in Stock (DRIP)?</label>
+                  <select
+                    className="select"
+                    value={divReinvest}
+                    onChange={(e) =>
+                      setDivReinvest(e.target.value as "Yes" | "No")
+                    }
+                  >
+                    <option value="No">No (Cash Retained)</option>
+                    <option value="Yes">Yes (Reinvested in Shares)</option>
+                  </select>
+                </div>
+                <div
+                  className="form-field full"
+                  style={{
+                    background: "var(--bg-subtle)",
+                    padding: "12px",
+                    borderRadius: "6px",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  {(() => {
+                    const sh = Number(divShares) || 0;
+                    const dps = Number(divDps) || 0;
+                    const wht = Number(divWht) || 0;
+                    const zakat = Number(divZakat) || 0;
+                    const gross = sh * dps;
+                    const net = gross - wht - zakat;
+                    return (
+                      <div className="mono" style={{ fontSize: "12.5px" }}>
+                        Gross Dividend: <b>{fmtPKR(gross, 2)}</b> | Tax + Zakat:{" "}
+                        <b className="neg">-{fmtPKR(wht + zakat, 2)}</b> | Net
+                        Dividend: <b className="pos">+{fmtPKR(net, 2)}</b>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: "10px",
+                  marginTop: "18px",
+                }}
+              >
+                <button
+                  className="btn"
+                  onClick={() => setDivModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-amber"
+                  onClick={saveDivForm}
+                  disabled={divSaving}
+                >
+                  {divSaving ? "Saving..." : "Save Dividend"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          POPUP MODAL 3: ADD NEW PSX COMPANY
+          ===================================================================== */}
+      {compModalOpen && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setCompModalOpen(false);
+          }}
+        >
+          <div className="modal-box">
+            <div className="card-header">
+              <div className="card-title">Add New PSX Company</div>
+              <button
+                className="btn btn-sm"
+                onClick={() => setCompModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="card-body">
+              <div className="form-grid">
+                <div className="form-field">
+                  <label>
+                    PSX Ticker Symbol
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ padding: "1px 6px", marginLeft: "6px" }}
+                      onClick={autoFetchNewTickerInfo}
+                      disabled={compFetching}
+                    >
+                      {compFetching ? "Fetching..." : "Auto-Fill from PSX"}
+                    </button>
+                  </label>
+                  <input
+                    type="text"
+                    className="input mono"
+                    placeholder="e.g. LUCK, MARI, SYS"
+                    style={{ textTransform: "uppercase" }}
+                    value={compTicker}
+                    onChange={(e) =>
+                      setCompTicker(e.target.value.toUpperCase())
+                    }
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Dividend Frequency</label>
+                  <select
+                    className="select"
+                    value={compFreq}
+                    onChange={(e) => setCompFreq(e.target.value)}
+                  >
+                    <option value="Qtr">Quarterly (Qtr)</option>
+                    <option value="Semi">Semi-Annual (Semi)</option>
+                    <option value="Annual">Annual</option>
+                    <option value="Monthly">Monthly</option>
+                    <option value="None">None</option>
+                  </select>
+                </div>
+                <div className="form-field full">
+                  <label>Company Name</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="e.g. Lucky Cement Limited"
+                    value={compName}
+                    onChange={(e) => setCompName(e.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>PSX Sector</label>
+                  <input
+                    type="text"
+                    className="input"
+                    value={compSector}
+                    onChange={(e) => setCompSector(e.target.value)}
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Live PSX Price (Rs.)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input mono"
+                    value={compPrice}
+                    onChange={(e) => setCompPrice(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: "10px",
+                  marginTop: "18px",
+                }}
+              >
+                <button
+                  className="btn"
+                  onClick={() => setCompModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button className="btn btn-primary" onClick={saveCompanyForm}>
+                  Save Company
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          POPUP MODAL 4: MARK DIVIDEND AS PAID & SET PAYMENT DATE
+          ===================================================================== */}
+      {markPaidModalDiv && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setMarkPaidModalDiv(null);
+          }}
+        >
+          <div className="modal-box" style={{ maxWidth: "460px" }}>
+            <div className="card-header">
+              <div className="card-title">
+                ✓ Mark {markPaidModalDiv.ticker} Dividend as Paid
+              </div>
+              <button
+                className="btn btn-sm"
+                onClick={() => setMarkPaidModalDiv(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="card-body">
+              <div style={{ marginBottom: "14px", fontSize: "13px" }}>
+                Confirm payout for <b>{markPaidModalDiv.ticker}</b> (
+                {markPaidModalDiv.year} {markPaidModalDiv.term} —{" "}
+                {fmtNum(markPaidModalDiv.sharesEligible)} sh @ Rs.{" "}
+                {markPaidModalDiv.dps.toFixed(2)}/sh):
+              </div>
+              <div className="form-field" style={{ marginBottom: "16px" }}>
+                <label>Date Dividend Was Received in Bank</label>
+                <input
+                  type="date"
+                  className="input mono"
+                  value={markPaidDate}
+                  onChange={(e) => setMarkPaidDate(e.target.value)}
+                />
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: "10px",
+                }}
+              >
+                <button
+                  className="btn"
+                  onClick={() => setMarkPaidModalDiv(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-emerald"
+                  onClick={confirmMarkDividendPaid}
+                >
+                  ✓ Confirm Paid
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SUB-COMPONENTS: SVG CHARTS & STAT STRIPS (Exact Match to Uncle's Layout)
+// ============================================================================
+
+function MonthlyDividendsSvgChart({
+  monthly,
+}: {
+  monthly: ReturnType<typeof runAccountingEngine>["monthly"];
+}) {
+  const w = 680;
+  const h = 290;
+  const padL = 52;
+  const padR = 48;
+  const padT = 28;
+  const padB = 34;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const maxVal = Math.max(...monthly.map((m) => m.grossDiv), 8500);
+
+  let runningCum = 0;
+  const cumArr = monthly.map((m) => {
+    runningCum += m.netDiv;
+    return runningCum;
+  });
+  const maxCum = Math.max(...cumArr, 32000);
+
+  const colW = plotW / Math.max(monthly.length, 1);
+  const barW = Math.min(32, colW * 0.58);
+  const pts: string[] = [];
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height="295">
+      {[0, 0.25, 0.5, 0.75, 1].map((f) => {
+        const y = padT + plotH * (1 - f);
+        const val = Math.round(maxVal * f);
+        const cVal = Math.round((maxCum * f) / 1000);
+        return (
+          <g key={f}>
+            <line
+              x1={padL}
+              y1={y}
+              x2={w - padR}
+              y2={y}
+              stroke="var(--border)"
+              strokeDasharray="3 3"
+            />
+            <text
+              x={padL - 8}
+              y={y + 3}
+              textAnchor="end"
+              fill="var(--text-muted)"
+              fontSize="10"
+              fontFamily="JetBrains Mono"
+            >
+              {val.toLocaleString()}
+            </text>
+            <text
+              x={w - padR + 6}
+              y={y + 3}
+              textAnchor="start"
+              fill="#2563eb"
+              fontSize="10"
+              fontFamily="JetBrains Mono"
+            >
+              {cVal}K
+            </text>
+          </g>
+        );
+      })}
+
+      {monthly.map((m, i) => {
+        const cx = padL + i * colW + colW / 2;
+        const x = cx - barW / 2;
+        const netH = (m.netDiv / maxVal) * plotH;
+        const taxH = ((m.wht + m.zakat) / maxVal) * plotH;
+        const yNet = padT + plotH - netH;
+        const yTax = yNet - taxH;
+        const cyCum = padT + plotH - (cumArr[i] / maxCum) * plotH;
+        pts.push(`${cx},${cyCum}`);
+
+        return (
+          <g key={m.ym}>
+            <rect
+              x={x}
+              y={yNet}
+              width={barW}
+              height={Math.max(netH, 1)}
+              rx="4"
+              fill="#10b981"
+            >
+              <title>
+                {m.ym} Net Dividend: {fmtPKR(m.netDiv, 2)}
+              </title>
+            </rect>
+            {taxH > 0 && (
+              <rect
+                x={x}
+                y={yTax}
+                width={barW}
+                height={taxH}
+                rx="2"
+                fill="#f59e0b"
+              >
+                <title>
+                  {m.ym} WHT &amp; Zakat: {fmtPKR(m.wht + m.zakat, 2)}
+                </title>
+              </rect>
+            )}
+            {m.netDiv > 0 && (
+              <text
+                x={cx}
+                y={yTax - 6}
+                textAnchor="middle"
+                fill="var(--text-main)"
+                fontSize="10"
+                fontWeight="700"
+                fontFamily="JetBrains Mono"
+              >
+                {Math.round(m.netDiv).toLocaleString()}
+              </text>
+            )}
+            <text
+              x={cx}
+              y={h - 10}
+              textAnchor="middle"
+              fill="var(--text-muted)"
+              fontSize="10.5"
+              fontWeight="600"
+              fontFamily="JetBrains Mono"
+            >
+              {m.ym.slice(2)}
+            </text>
+          </g>
+        );
+      })}
+
+      <polyline
+        fill="none"
+        stroke="#2563eb"
+        strokeWidth="2.5"
+        points={pts.join(" ")}
       />
+      {pts.map((p, idx) => {
+        const [px, py] = p.split(",");
+        return (
+          <circle
+            key={idx}
+            cx={px}
+            cy={py}
+            r="3.5"
+            fill="#ffffff"
+            stroke="#2563eb"
+            strokeWidth="2"
+          >
+            <title>
+              Cumulative Net Divs ({monthly[idx].ym}):{" "}
+              {fmtPKR(cumArr[idx], 0)}
+            </title>
+          </circle>
+        );
+      })}
+    </svg>
+  );
+}
+
+function MonthlyStatStrip({
+  monthly,
+  totals,
+}: {
+  monthly: ReturnType<typeof runAccountingEngine>["monthly"];
+  totals: ReturnType<typeof runAccountingEngine>["totals"];
+}) {
+  const bestMonth = [...monthly].sort((a, b) => b.netDiv - a.netDiv)[0] || {
+    ym: "N/A",
+    netDiv: 0,
+  };
+  const activeDivMonths = monthly.filter((m) => m.netDiv > 0).length || 1;
+
+  return (
+    <div className="chart-stat-strip">
+      <div className="chart-stat-item">
+        <div className="chart-stat-lbl">Peak Dividend Month</div>
+        <div className="chart-stat-val pos">
+          {bestMonth.ym} (+{fmtPKR(bestMonth.netDiv, 0)})
+        </div>
+      </div>
+      <div className="chart-stat-item">
+        <div className="chart-stat-lbl">Avg Per Paying Month</div>
+        <div className="chart-stat-val pos">
+          +{fmtPKR(totals.totalNetDivPaid / activeDivMonths, 0)} / mo
+        </div>
+      </div>
+      <div className="chart-stat-item">
+        <div className="chart-stat-lbl">Total Gross Dividends</div>
+        <div className="chart-stat-val">
+          {fmtPKR(totals.totalGrossDivPaid, 0)}
+        </div>
+      </div>
+      <div className="chart-stat-item">
+        <div className="chart-stat-lbl">WHT &amp; Zakat Deducted</div>
+        <div className="chart-stat-val neg">
+          -{fmtPKR(totals.totalTaxWithheld, 0)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StockPositionSvgChart({ stock }: { stock: HoldingRecord }) {
+  const lots = stock.lots || [];
+  let low52 = stock.price * 0.85;
+  let high52 = stock.price * 1.15;
+  if (stock.high52 && stock.high52.includes("-")) {
+    const parts = stock.high52
+      .split("-")
+      .map((x) => parseFloat(x.replace(/,/g, "").trim()));
+    if (parts.length === 2 && parts[1] > 0) {
+      low52 = parts[0];
+      high52 = parts[1];
+    }
+  }
+
+  const points: {
+    date: string;
+    price: number;
+    label: string;
+    type: string;
+  }[] = [];
+  lots.forEach((l) => {
+    points.push({
+      date: l.date,
+      price: l.price,
+      label: `${l.action} ${l.shares}sh @ Rs.${l.price}`,
+      type: l.action,
+    });
+  });
+  if (stock.ldcp > 0) {
+    points.push({
+      date: "Prev Close",
+      price: stock.ldcp,
+      label: `LDCP: Rs.${stock.ldcp}`,
+      type: "LDCP",
+    });
+  }
+  if (stock.price > 0) {
+    points.push({
+      date: "Live PSX",
+      price: stock.price,
+      label: `Live: Rs.${stock.price}`,
+      type: "LIVE",
+    });
+  }
+
+  const allPrices = [
+    ...points.map((p) => p.price),
+    stock.wac,
+    low52,
+    high52,
+  ].filter((v) => v > 0);
+  const minP = (allPrices.length ? Math.min(...allPrices) : 10) * 0.94;
+  const maxP = (allPrices.length ? Math.max(...allPrices) : 100) * 1.06;
+
+  const w = 680;
+  const ch = 310;
+  const padL = 58;
+  const padR = 65;
+  const padT = 26;
+  const padB = 38;
+  const plotW = w - padL - padR;
+  const plotH = ch - padT - padB;
+
+  const getY = (val: number) =>
+    padT + plotH - ((val - minP) / Math.max(maxP - minP, 1)) * plotH;
+
+  const coords = points.map((pt, i) => ({
+    ...pt,
+    x: padL + (i / Math.max(points.length - 1, 1)) * plotW,
+    y: getY(pt.price),
+  }));
+
+  const linePath = coords.map((c) => `${c.x},${c.y}`).join(" ");
+  const areaPath =
+    coords.length > 1
+      ? `M ${coords[0].x},${padT + plotH} L ` +
+        coords.map((c) => `${c.x},${c.y}`).join(" L ") +
+        ` L ${coords[coords.length - 1].x},${padT + plotH} Z`
+      : "";
+
+  const isUpOverall = stock.wac > 0 ? stock.price >= stock.wac : true;
+  const mainColor = isUpOverall ? "#10b981" : "#ef4444";
+  const yWac = stock.wac > 0 ? getY(stock.wac) : null;
+  const yLive = stock.price > 0 ? getY(stock.price) : null;
+
+  return (
+    <div>
+      <div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "8px",
+          }}
+        >
+          <div>
+            <span className="fw-700" style={{ fontSize: "15px" }}>
+              PSX:{stock.ticker} — {stock.name}
+            </span>
+            <span
+              className="muted"
+              style={{ fontSize: "12px", marginLeft: "8px" }}
+            >
+              ({stock.sector})
+            </span>
+          </div>
+        </div>
+        <div className="chart-legend" style={{ marginBottom: "8px" }}>
+          <span className="legend-item">
+            <span
+              className="legend-dot"
+              style={{
+                background: "#2563eb",
+                border: "2px solid #fff",
+                boxShadow: "0 0 0 1px #2563eb",
+              }}
+            />
+            <span>Your Buy Order Price</span>
+          </span>
+          <span className="legend-item">
+            <span
+              className="legend-dot"
+              style={{
+                background: "#dc2626",
+                border: "2px solid #fff",
+                boxShadow: "0 0 0 1px #dc2626",
+              }}
+            />
+            <span>Your Sell Order Price</span>
+          </span>
+          <span className="legend-item">
+            <span
+              className="legend-dot"
+              style={{
+                background: "#64748b",
+                border: "2px solid #fff",
+                boxShadow: "0 0 0 1px #64748b",
+              }}
+            />
+            <span>Prev Day Close (LDCP)</span>
+          </span>
+          <span className="legend-item">
+            <span
+              className="legend-dash"
+              style={{ borderColor: "#d97706" }}
+            />
+            <span style={{ color: "#d97706", fontWeight: 700 }}>
+              Your Avg Buy Price (WAC: Rs.{stock.wac.toFixed(2)})
+            </span>
+          </span>
+          <span className="legend-item">
+            <span
+              className="legend-line"
+              style={{ background: mainColor }}
+            />
+            <span style={{ color: mainColor, fontWeight: 700 }}>
+              Live PSX Price (NOW: Rs.{stock.price.toFixed(2)})
+            </span>
+          </span>
+        </div>
+
+        <svg viewBox={`0 0 ${w} ${ch}`} width="100%" height="315">
+          <defs>
+            <linearGradient id="stockGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={mainColor} stopOpacity="0.28" />
+              <stop offset="100%" stopColor={mainColor} stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          {[0, 0.25, 0.5, 0.75, 1].map((f) => {
+            const y = padT + plotH * (1 - f);
+            const pVal = minP + (maxP - minP) * f;
+            return (
+              <g key={f}>
+                <line
+                  x1={padL}
+                  y1={y}
+                  x2={w - padR}
+                  y2={y}
+                  stroke="var(--border)"
+                  strokeDasharray="3 3"
+                />
+                <text
+                  x={padL - 8}
+                  y={y + 4}
+                  textAnchor="end"
+                  fill="var(--text-muted)"
+                  fontSize="10"
+                  fontFamily="JetBrains Mono"
+                >
+                  Rs.{pVal.toFixed(1)}
+                </text>
+              </g>
+            );
+          })}
+          {areaPath && <path d={areaPath} fill="url(#stockGrad)" />}
+          {coords.length > 1 && (
+            <polyline
+              fill="none"
+              stroke={mainColor}
+              strokeWidth="2.5"
+              points={linePath}
+            />
+          )}
+          {yWac !== null && (
+            <g>
+              <line
+                x1={padL}
+                y1={yWac}
+                x2={w - padR}
+                y2={yWac}
+                stroke="#d97706"
+                strokeWidth="2"
+                strokeDasharray="6 4"
+              />
+              <rect
+                x={w - padR + 2}
+                y={yWac - 9}
+                width="60"
+                height="18"
+                rx="3"
+                fill="#d97706"
+              />
+              <text
+                x={w - padR + 32}
+                y={yWac + 3}
+                textAnchor="middle"
+                fill="#fff"
+                fontSize="9.5"
+                fontWeight="700"
+                fontFamily="JetBrains Mono"
+              >
+                WAC {stock.wac.toFixed(1)}
+              </text>
+            </g>
+          )}
+          {yLive !== null && (
+            <g>
+              <line
+                x1={padL}
+                y1={yLive}
+                x2={w - padR}
+                y2={yLive}
+                stroke={mainColor}
+                strokeWidth="1.5"
+                strokeDasharray="2 2"
+              />
+              <rect
+                x={w - padR + 2}
+                y={yLive - 9}
+                width="60"
+                height="18"
+                rx="3"
+                fill={mainColor}
+              />
+              <text
+                x={w - padR + 32}
+                y={yLive + 3}
+                textAnchor="middle"
+                fill="#fff"
+                fontSize="9.5"
+                fontWeight="700"
+                fontFamily="JetBrains Mono"
+              >
+                NOW {stock.price.toFixed(1)}
+              </text>
+            </g>
+          )}
+          {coords.map((c, idx) => {
+            const dotColor =
+              c.type === "Buy"
+                ? "#2563eb"
+                : c.type === "Sell"
+                ? "#dc2626"
+                : c.type === "LIVE"
+                ? mainColor
+                : "#64748b";
+            return (
+              <g key={idx}>
+                <circle
+                  cx={c.x}
+                  cy={c.y}
+                  r="5.5"
+                  fill={dotColor}
+                  stroke="#ffffff"
+                  strokeWidth="2"
+                >
+                  <title>
+                    {c.date}: {c.label}
+                  </title>
+                </circle>
+                <text
+                  x={c.x}
+                  y={c.y - 10}
+                  textAnchor="middle"
+                  fill="var(--text-main)"
+                  fontSize="10"
+                  fontWeight="600"
+                  fontFamily="JetBrains Mono"
+                >
+                  {c.price.toFixed(1)}
+                </text>
+                <text
+                  x={c.x}
+                  y={ch - 12}
+                  textAnchor="middle"
+                  fill="var(--text-muted)"
+                  fontSize="9.5"
+                  fontFamily="JetBrains Mono"
+                >
+                  {c.date.slice(-5)}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      <div className="chart-stat-strip" style={{ marginTop: "8px" }}>
+        <div className="chart-stat-item">
+          <div className="chart-stat-lbl">52-Week Range</div>
+          <div className="chart-stat-val">{stock.high52 || "N/A"}</div>
+        </div>
+        <div className="chart-stat-item">
+          <div className="chart-stat-lbl">Day Range</div>
+          <div className="chart-stat-val">{stock.dayRange || "N/A"}</div>
+        </div>
+        <div className="chart-stat-item">
+          <div className="chart-stat-lbl">P/E Ratio (TTM)</div>
+          <div className="chart-stat-val">{stock.pe || "N/A"}</div>
+        </div>
+        <div className="chart-stat-item">
+          <div className="chart-stat-lbl">Volume Traded</div>
+          <div className="chart-stat-val">{stock.volume || "0"}</div>
+        </div>
+      </div>
     </div>
   );
 }

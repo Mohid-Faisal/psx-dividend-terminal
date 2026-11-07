@@ -1,446 +1,598 @@
 import {
   PortfolioState,
   PositionSummary,
+  TransactionRecord,
+  DividendRecord,
 } from "@/types/portfolio";
 
 export const LEGACY_MCB_SALE = {
   date: "2025-11-25",
   ticker: "MCB",
-  shares: 219,
-  price: 357.6,
+  shares: 225,
+  price: 348.75,
   netProceeds: 78315.33,
 };
 
-export function isLegacyMcbPreLedgerSale(tx: {
-  ticker: string;
-  action: string;
-  shares: number;
-  date: string;
-}): boolean {
-  return (
-    tx.ticker === "MCB" &&
-    tx.action === "Sell" &&
-    Math.round(Number(tx.shares)) === 219 &&
-    tx.date === "2025-11-25"
-  );
+export const SECTOR_COLORS: Record<string, string> = {
+  "POWER GENERATION & DISTRIBUTION": "#0284c7",
+  "COMMERCIAL BANKS": "#2563eb",
+  "FERTILIZER": "#059669",
+  "OIL & GAS EXPLORATION COMPANIES": "#d97706",
+  "OIL & GAS MARKETING COMPANIES": "#ea580c",
+  "CEMENT": "#4f46e5",
+  "TECHNOLOGY & COMMUNICATION": "#7c3aed",
+  "TEXTILE COMPOSITE": "#db2777",
+  "PHARMACEUTICALS": "#0d9488",
+  "CHEMICAL": "#9333ea",
+  "AUTOMOBILE ASSEMBLER": "#e11d48",
+  "AUTOMOBILE PARTS & ACCESSORIES": "#be123c",
+  "INV. BANKS / INV. COS. / SECURITIES COS.": "#0891b2",
+  "REAL ESTATE INVESTMENT TRUST": "#65a30d",
+  "FOOD & PERSONAL CARE PRODUCTS": "#16a34a",
+  "GLASS & CERAMICS": "#ca8a04",
+  "SYNTHETIC & RAYON": "#c026d3",
+  "EXCHANGE TRADED FUNDS": "#475569",
+  "MODARABAS": "#0f766e",
+  "PAPER, BOARD & PACKAGING": "#b45309",
+};
+
+export function getSectorColor(sector?: string): string {
+  return SECTOR_COLORS[(sector || "").toUpperCase()] || "#475569";
 }
 
 export function computeBrokerageAndSst(
   shares: number,
   price: number,
-  rate = 0.0015,
+  notes = "",
+  rate = 0.0017,
   minPerShare = 0.05,
   sstRate = 0.15
 ) {
-  const gross = shares * price;
-  const brkFees = Number(Math.max(gross * rate, shares * minPerShare).toFixed(2));
+  const sh = Math.abs(Number(shares) || 0);
+  const pr = Number(price) || 0;
+  if (notes.toUpperCase().includes("IPO") || sh <= 0) {
+    return { brkFees: 0, sst: 0 };
+  }
+  const brkFees = Number(Math.max(sh * minPerShare, sh * pr * rate).toFixed(2));
   const sst = Number((brkFees * sstRate).toFixed(2));
   return { brkFees, sst };
 }
 
-export function computePortfolioAnalytics(state: PortfolioState) {
-  const companyMap = new Map(state.companies.map((c) => [c.ticker, c]));
+export interface EnrichedTransaction extends TransactionRecord {
+  grossAmount: number;
+  netCashFlow: number;
+  ym: string;
+  runningWac: number;
+  runningShares: number;
+}
 
-  // Sort transactions chronologically by date, then Buy before Sell on same date, then id
-  const sortedTxns = [...state.transactions].sort((a, b) => {
-    if (a.date !== b.date) return a.date.localeCompare(b.date);
-    if (a.action !== b.action) return a.action === "Buy" ? -1 : 1;
-    return a.id - b.id;
-  });
+export interface EnrichedDividend extends DividendRecord {
+  company: string;
+  grossDividend: number;
+  netDividend: number;
+  ym: string;
+  matchedDripTx?: EnrichedTransaction | null;
+}
 
-  const posMap = new Map<string, PositionSummary>();
+export interface HoldingRecord {
+  ticker: string;
+  name: string;
+  frequency: string;
+  sector: string;
+  price: number;
+  ldcp: number;
+  change: number;
+  changePct: number;
+  pe: string;
+  high52: string;
+  dayRange: string;
+  volume: string;
+  asOf: string;
+  legacyShares: number;
+  activeShares: number;
+  activeCostBasis: number;
+  totalBuyShares: number;
+  totalBuyCost: number;
+  totalSellShares: number;
+  totalSellNet: number;
+  realizedPnL: number;
+  isLegacyLiquidation: boolean;
+  grossDivPaid: number;
+  whtPaid: number;
+  zakatPaid: number;
+  netDivPaid: number;
+  netDivUnpaid: number;
+  reinvestedDivNet: number;
+  trailingAnnualDps: number;
+  wac: number;
+  marketValue: number;
+  unrealizedPnL: number;
+  unrealizedPct: number;
+  totalReturn: number;
+  totalReturnPct: number;
+  yoc: number;
+  weight: number;
+  lots: EnrichedTransaction[];
+  divRecords: EnrichedDividend[];
+}
 
-  for (const c of state.companies) {
-    posMap.set(c.ticker, {
-      ticker: c.ticker,
-      name: c.name,
-      sector: c.sector || "OTHER",
+export interface MonthlyRecord {
+  ym: string;
+  buyOutflow: number;
+  sellInflow: number;
+  sellInflowExLegacy: number;
+  grossDiv: number;
+  wht: number;
+  zakat: number;
+  netDiv: number;
+  reinvValue: number;
+}
+
+export function runAccountingEngine(state: PortfolioState) {
+  const compMap: Record<string, HoldingRecord> = {};
+
+  (state.companies || []).forEach((c) => {
+    const sym = (c.ticker || "").trim().toUpperCase();
+    if (!sym) return;
+    const legacySh = sym === "MCB" ? 225 : 0;
+    compMap[sym] = {
+      ticker: sym,
+      name: c.name || sym,
       frequency: c.frequency || "None",
-      shares: 0,
-      totalSharesBought: 0,
-      totalSharesSold: 0,
-      wac: 0,
-      costBasis: 0,
-      livePrice: Number(c.price) || 0,
+      sector: c.sector || "OTHER",
+      price: Number(c.price) || 0,
       ldcp: Number(c.ldcp) || Number(c.price) || 0,
-      dayChange: Number(c.change) || 0,
-      dayChangePct: Number(c.changePct) || 0,
+      change: Number(c.change) || 0,
+      changePct: Number(c.changePct) || 0,
+      pe: c.pe || "N/A",
+      high52: c.high52 || "",
+      dayRange: c.dayRange || "",
+      volume: c.volume || "0",
+      asOf: c.asOf || "",
+      legacyShares: legacySh,
+      activeShares: legacySh,
+      activeCostBasis: 0,
+      totalBuyShares: 0,
+      totalBuyCost: 0,
+      totalSellShares: 0,
+      totalSellNet: 0,
+      realizedPnL: 0,
+      isLegacyLiquidation: false,
+      grossDivPaid: 0,
+      whtPaid: 0,
+      zakatPaid: 0,
+      netDivPaid: 0,
+      netDivUnpaid: 0,
+      reinvestedDivNet: 0,
+      trailingAnnualDps: 0,
+      wac: 0,
       marketValue: 0,
-      unrealizedPnl: 0,
-      unrealizedPnlPct: 0,
-      realizedPnl: 0,
-      grossDividends: 0,
-      whtTotal: 0,
-      zakatTotal: 0,
-      netDividendsPaid: 0,
-      netDividendsUnpaid: 0,
+      unrealizedPnL: 0,
+      unrealizedPct: 0,
       totalReturn: 0,
       totalReturnPct: 0,
-      yieldOnCostPct: 0,
-      currentYieldPct: 0,
-      weightPct: 0,
-      high52: c.high52 || "N/A",
-      dayRange: c.dayRange || "N/A",
-      volume: c.volume || "0",
-      pe: c.pe || "N/A",
-      asOf: c.asOf || "",
+      yoc: 0,
+      weight: 0,
       lots: [],
-    });
-  }
-
-  let totalBuyCashOutflow = 0;
-  let totalSellCashInflow = 0;
-  let totalBrokeragePaid = 0;
-  let totalSstPaid = 0;
-
-  for (const tx of sortedTxns) {
-    // Skip legacy pre-ledger MCB 219-share sale from active position cost basis (handled via MCB cashflow toggle)
-    if (isLegacyMcbPreLedgerSale(tx)) {
-      continue;
-    }
-
-    let pos = posMap.get(tx.ticker);
-    if (!pos) {
-      const fallbackComp = companyMap.get(tx.ticker);
-      pos = {
-        ticker: tx.ticker,
-        name: tx.company || fallbackComp?.name || tx.ticker,
-        sector: fallbackComp?.sector || "OTHER",
-        frequency: fallbackComp?.frequency || "None",
-        shares: 0,
-        totalSharesBought: 0,
-        totalSharesSold: 0,
-        wac: 0,
-        costBasis: 0,
-        livePrice: fallbackComp?.price || tx.price,
-        ldcp: fallbackComp?.ldcp || tx.price,
-        dayChange: fallbackComp?.change || 0,
-        dayChangePct: fallbackComp?.changePct || 0,
-        marketValue: 0,
-        unrealizedPnl: 0,
-        unrealizedPnlPct: 0,
-        realizedPnl: 0,
-        grossDividends: 0,
-        whtTotal: 0,
-        zakatTotal: 0,
-        netDividendsPaid: 0,
-        netDividendsUnpaid: 0,
-        totalReturn: 0,
-        totalReturnPct: 0,
-        yieldOnCostPct: 0,
-        currentYieldPct: 0,
-        weightPct: 0,
-        high52: "N/A",
-        dayRange: "N/A",
-        volume: "0",
-        pe: "N/A",
-        asOf: "",
-        lots: [],
-      };
-      posMap.set(tx.ticker, pos);
-    }
-
-    const shares = Number(tx.shares) || 0;
-    const price = Number(tx.price) || 0;
-    const brk = Number(tx.brkFees) || 0;
-    const sst = Number(tx.sst) || 0;
-    const fees = brk + sst;
-
-    totalBrokeragePaid += brk;
-    totalSstPaid += sst;
-
-    if (tx.action === "Buy") {
-      const lotCost = shares * price + fees;
-      pos.shares += shares;
-      pos.totalSharesBought += shares;
-      pos.costBasis += lotCost;
-      pos.wac = pos.shares > 0 ? pos.costBasis / pos.shares : 0;
-      totalBuyCashOutflow += lotCost;
-
-      pos.lots.push({
-        id: tx.id,
-        date: tx.date,
-        action: "Buy",
-        shares,
-        price,
-        fees,
-        totalAmount: lotCost,
-        runningShares: pos.shares,
-        runningWac: pos.wac,
-        realizedPnl: 0,
-      });
-    } else {
-      // Sell reduces cost basis proportionally by sharesSold * currentWAC
-      const netProceeds = shares * price - fees;
-      const costRemoved = shares * pos.wac;
-      const lotRealizedPnl = netProceeds - costRemoved;
-
-      pos.shares = Math.max(0, pos.shares - shares);
-      pos.totalSharesSold += shares;
-      pos.costBasis = Math.max(0, pos.costBasis - costRemoved);
-      if (pos.shares === 0) {
-        pos.costBasis = 0;
-        pos.wac = 0;
-      }
-      pos.realizedPnl += lotRealizedPnl;
-      totalSellCashInflow += netProceeds;
-
-      pos.lots.push({
-        id: tx.id,
-        date: tx.date,
-        action: "Sell",
-        shares,
-        price,
-        fees,
-        totalAmount: netProceeds,
-        runningShares: pos.shares,
-        runningWac: pos.wac,
-        realizedPnl: lotRealizedPnl,
-      });
-    }
-  }
-
-  // Process dividends
-  let totalGrossDividendsPaid = 0;
-  let totalWhtPaid = 0;
-  let totalZakatPaid = 0;
-  let totalNetDividendsPaid = 0;
-  let totalNetDividendsUnpaid = 0;
-
-  for (const div of state.dividends) {
-    const pos = posMap.get(div.ticker);
-    const gross = (Number(div.sharesEligible) || 0) * (Number(div.dps) || 0);
-    const wht = Number(div.wht) || 0;
-    const zakat = Number(div.zakat) || 0;
-    const net = Math.max(0, gross - wht - zakat);
-
-    if (div.status === "Paid") {
-      totalGrossDividendsPaid += gross;
-      totalWhtPaid += wht;
-      totalZakatPaid += zakat;
-      totalNetDividendsPaid += net;
-      if (pos) {
-        pos.grossDividends += gross;
-        pos.whtTotal += wht;
-        pos.zakatTotal += zakat;
-        pos.netDividendsPaid += net;
-      }
-    } else {
-      totalNetDividendsUnpaid += net;
-      if (pos) {
-        pos.netDividendsUnpaid += net;
-      }
-    }
-  }
-
-  let totalCostBasis = 0;
-  let totalMarketValue = 0;
-  let totalUnrealizedPnl = 0;
-  let totalRealizedPnl = 0;
-  let totalDayChangeValue = 0;
-
-  const positions: PositionSummary[] = [];
-
-  for (const pos of posMap.values()) {
-    pos.marketValue = pos.shares * pos.livePrice;
-    pos.unrealizedPnl = pos.shares > 0 ? pos.marketValue - pos.costBasis : 0;
-    pos.unrealizedPnlPct =
-      pos.costBasis > 0 ? (pos.unrealizedPnl / pos.costBasis) * 100 : 0;
-    pos.totalReturn =
-      pos.unrealizedPnl + pos.realizedPnl + pos.netDividendsPaid;
-    pos.totalReturnPct =
-      pos.costBasis > 0 ? (pos.totalReturn / pos.costBasis) * 100 : 0;
-    pos.yieldOnCostPct =
-      pos.costBasis > 0 ? (pos.netDividendsPaid / pos.costBasis) * 100 : 0;
-    pos.currentYieldPct =
-      pos.marketValue > 0 ? (pos.netDividendsPaid / pos.marketValue) * 100 : 0;
-
-    totalCostBasis += pos.costBasis;
-    totalMarketValue += pos.marketValue;
-    totalUnrealizedPnl += pos.unrealizedPnl;
-    totalRealizedPnl += pos.realizedPnl;
-    totalDayChangeValue += pos.shares * pos.dayChange;
-
-    positions.push(pos);
-  }
-
-  for (const pos of positions) {
-    pos.weightPct =
-      totalMarketValue > 0 ? (pos.marketValue / totalMarketValue) * 100 : 0;
-  }
-
-  const activePositions = positions
-    .filter((p) => p.shares > 0)
-    .sort((a, b) => b.marketValue - a.marketValue);
-
-  const exitedPositions = positions.filter(
-    (p) => p.shares === 0 && p.totalSharesBought > 0
-  );
-
-  // Sector breakdown
-  const sectorMap = new Map<
-    string,
-    {
-      sector: string;
-      costBasis: number;
-      marketValue: number;
-      unrealizedPnl: number;
-      netDividends: number;
-      weightPct: number;
-      count: number;
-    }
-  >();
-
-  for (const pos of activePositions) {
-    const sec = pos.sector || "OTHER";
-    const cur = sectorMap.get(sec) || {
-      sector: sec,
-      costBasis: 0,
-      marketValue: 0,
-      unrealizedPnl: 0,
-      netDividends: 0,
-      weightPct: 0,
-      count: 0,
-    };
-    cur.costBasis += pos.costBasis;
-    cur.marketValue += pos.marketValue;
-    cur.unrealizedPnl += pos.unrealizedPnl;
-    cur.netDividends += pos.netDividendsPaid;
-    cur.count += 1;
-    sectorMap.set(sec, cur);
-  }
-
-  const sectors = Array.from(sectorMap.values())
-    .map((s) => ({
-      ...s,
-      weightPct:
-        totalMarketValue > 0 ? (s.marketValue / totalMarketValue) * 100 : 0,
-    }))
-    .sort((a, b) => b.marketValue - a.marketValue);
-
-  // Monthly dividend breakdown
-  const monthlyDivMap = new Map<
-    string,
-    {
-      monthKey: string;
-      label: string;
-      gross: number;
-      net: number;
-      wht: number;
-      zakat: number;
-      count: number;
-    }
-  >();
-
-  const paidDivs = [...state.dividends]
-    .filter((d) => d.status === "Paid" && d.paymentDate)
-    .sort((a, b) => a.paymentDate.localeCompare(b.paymentDate));
-
-  for (const d of paidDivs) {
-    const monthKey = d.paymentDate.slice(0, 7); // YYYY-MM
-    const [yr, mo] = monthKey.split("-");
-    const monthNames = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
-    ];
-    const label = `${monthNames[Math.max(0, parseInt(mo, 10) - 1)]} '${yr.slice(2)}`;
-    const gross = d.sharesEligible * d.dps;
-    const net = Math.max(0, gross - d.wht - d.zakat);
-    const cur = monthlyDivMap.get(monthKey) || {
-      monthKey,
-      label,
-      gross: 0,
-      net: 0,
-      wht: 0,
-      zakat: 0,
-      count: 0,
-    };
-    cur.gross += gross;
-    cur.net += net;
-    cur.wht += d.wht;
-    cur.zakat += d.zakat;
-    cur.count += 1;
-    monthlyDivMap.set(monthKey, cur);
-  }
-
-  let runningCumNet = 0;
-  const monthlyDividends = Array.from(monthlyDivMap.values()).map((m) => {
-    runningCumNet += m.net;
-    return {
-      ...m,
-      cumulativeNet: runningCumNet,
+      divRecords: [],
     };
   });
 
-  const legacyMcbProceeds = state.settings.includeLegacyMcbInCashflow
-    ? LEGACY_MCB_SALE.netProceeds
-    : 0;
+  [...(state.transactions || []), ...(state.dividends || [])].forEach(
+    (item: { ticker?: string; company?: string }) => {
+      const sym = (item.ticker || "").trim().toUpperCase();
+      if (sym && !compMap[sym]) {
+        const legacySh = sym === "MCB" ? 225 : 0;
+        compMap[sym] = {
+          ticker: sym,
+          name: item.company || sym,
+          frequency: "None",
+          sector: "OTHER",
+          price: 0,
+          ldcp: 0,
+          change: 0,
+          changePct: 0,
+          pe: "N/A",
+          high52: "",
+          dayRange: "",
+          volume: "0",
+          asOf: "",
+          legacyShares: legacySh,
+          activeShares: legacySh,
+          activeCostBasis: 0,
+          totalBuyShares: 0,
+          totalBuyCost: 0,
+          totalSellShares: 0,
+          totalSellNet: 0,
+          realizedPnL: 0,
+          isLegacyLiquidation: false,
+          grossDivPaid: 0,
+          whtPaid: 0,
+          zakatPaid: 0,
+          netDivPaid: 0,
+          netDivUnpaid: 0,
+          reinvestedDivNet: 0,
+          trailingAnnualDps: 0,
+          wac: 0,
+          marketValue: 0,
+          unrealizedPnL: 0,
+          unrealizedPct: 0,
+          totalReturn: 0,
+          totalReturnPct: 0,
+          yoc: 0,
+          weight: 0,
+          lots: [],
+          divRecords: [],
+        };
+      }
+    }
+  );
 
-  const netOutOfPocketCapital =
-    totalBuyCashOutflow -
-    totalSellCashInflow -
-    legacyMcbProceeds -
-    totalNetDividendsPaid;
+  const sortedTxs = [...(state.transactions || [])].sort((a, b) => {
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    return (a.id || 0) - (b.id || 0);
+  });
 
-  const totalAllInclusiveReturn =
-    totalUnrealizedPnl + totalRealizedPnl + totalNetDividendsPaid;
-  const totalAllInclusiveReturnPct =
-    totalCostBasis > 0 ? (totalAllInclusiveReturn / totalCostBasis) * 100 : 0;
+  const monthlyMap: Record<string, MonthlyRecord> = {};
+  function ensureMonth(ym: string): MonthlyRecord | null {
+    if (!ym) return null;
+    if (!monthlyMap[ym]) {
+      monthlyMap[ym] = {
+        ym,
+        buyOutflow: 0,
+        sellInflow: 0,
+        sellInflowExLegacy: 0,
+        grossDiv: 0,
+        wht: 0,
+        zakat: 0,
+        netDiv: 0,
+        reinvValue: 0,
+      };
+    }
+    return monthlyMap[ym];
+  }
+
+  [
+    "2025-11",
+    "2025-12",
+    "2026-01",
+    "2026-02",
+    "2026-03",
+    "2026-04",
+    "2026-05",
+    "2026-06",
+    "2026-07",
+    "2026-08",
+    "2026-09",
+    "2026-10",
+    "2026-11",
+  ].forEach(ensureMonth);
+
+  const enrichedTxs: EnrichedTransaction[] = [];
+  sortedTxs.forEach((t) => {
+    const sym = (t.ticker || "").trim().toUpperCase();
+    const p = compMap[sym];
+    if (!p) return;
+    const sh = Math.abs(Number(t.shares) || 0);
+    const pr = Number(t.price) || 0;
+    const gross = sh * pr;
+    const brk = Number(t.brkFees) || 0;
+    const sst = Number(t.sst) || 0;
+    const fees = brk + sst;
+    const ym = (t.date || "").slice(0, 7);
+    const mObj = ensureMonth(ym);
+    let netCashFlow = 0;
+
+    if (t.action === "Buy") {
+      const totalCost = gross + fees;
+      netCashFlow = -totalCost;
+      p.activeShares += sh;
+      p.activeCostBasis += totalCost;
+      p.totalBuyShares += sh;
+      p.totalBuyCost += totalCost;
+      if (mObj) mObj.buyOutflow += totalCost;
+    } else if (t.action === "Sell") {
+      const netProceeds = gross - fees;
+      netCashFlow = netProceeds;
+      p.totalSellShares += sh;
+      p.totalSellNet += netProceeds;
+      if (mObj) mObj.sellInflow += netProceeds;
+
+      if (p.totalBuyShares === 0 && p.legacyShares >= sh) {
+        p.isLegacyLiquidation = true;
+        p.activeShares = Math.max(0, p.activeShares - sh);
+      } else {
+        if (mObj) mObj.sellInflowExLegacy += netProceeds;
+        const currentWac =
+          p.activeShares > 0 ? p.activeCostBasis / p.activeShares : 0;
+        const costRemoved = currentWac * sh;
+        p.realizedPnL += netProceeds - costRemoved;
+        p.activeShares = Math.max(0, p.activeShares - sh);
+        p.activeCostBasis = Math.max(0, p.activeCostBasis - costRemoved);
+      }
+    }
+
+    const runningWac =
+      p.activeShares > 0 ? p.activeCostBasis / p.activeShares : 0;
+    const rec: EnrichedTransaction = {
+      ...t,
+      ticker: sym,
+      company: p.name,
+      shares: sh,
+      price: pr,
+      grossAmount: gross,
+      brkFees: brk,
+      sst,
+      netCashFlow,
+      ym,
+      runningWac,
+      runningShares: p.activeShares,
+    };
+    p.lots.push(rec);
+    enrichedTxs.push(rec);
+  });
+
+  const sortedDivs = [...(state.dividends || [])].sort((a, b) => {
+    if (a.paymentDate !== b.paymentDate)
+      return a.paymentDate.localeCompare(b.paymentDate);
+    return (a.id || 0) - (b.id || 0);
+  });
+
+  const enrichedDivs: EnrichedDividend[] = [];
+  sortedDivs.forEach((d) => {
+    const sym = (d.ticker || "").trim().toUpperCase();
+    const p = compMap[sym];
+    if (!p) return;
+    const sh = Number(d.sharesEligible) || 0;
+    const dps = Number(d.dps) || 0;
+    const gross = sh * dps;
+    const wht = Number(d.wht) || 0;
+    const zakat = Number(d.zakat) || 0;
+    const net = gross - wht - zakat;
+    const ym = (d.paymentDate || "").slice(0, 7);
+    const status = d.status || "Paid";
+    const reinvest = d.reinvest || "No";
+
+    let matchedDripTx: EnrichedTransaction | null = null;
+    if (reinvest === "Yes") {
+      const payTime = new Date(d.paymentDate).getTime();
+      matchedDripTx =
+        enrichedTxs.find((tx) => {
+          if (tx.ticker !== sym || tx.action !== "Buy") return false;
+          const diffDays =
+            (new Date(tx.date).getTime() - payTime) / (1000 * 3600 * 24);
+          return (
+            diffDays >= -2 &&
+            diffDays <= 35 &&
+            Math.abs(tx.grossAmount - net) <= Math.max(net * 0.65, 500)
+          );
+        }) || null;
+    }
+
+    if (status === "Paid") {
+      p.grossDivPaid += gross;
+      p.whtPaid += wht;
+      p.zakatPaid += zakat;
+      p.netDivPaid += net;
+      p.trailingAnnualDps += dps;
+      if (reinvest === "Yes") p.reinvestedDivNet += net;
+      const mObj = ensureMonth(ym);
+      if (mObj) {
+        mObj.grossDiv += gross;
+        mObj.wht += wht;
+        mObj.zakat += zakat;
+        mObj.netDiv += net;
+        if (reinvest === "Yes") mObj.reinvValue += net;
+      }
+    } else {
+      p.netDivUnpaid += net;
+    }
+
+    const rec: EnrichedDividend = {
+      ...d,
+      ticker: sym,
+      company: p.name,
+      sharesEligible: sh,
+      dps,
+      grossDividend: gross,
+      wht,
+      zakat,
+      netDividend: net,
+      ym,
+      status,
+      reinvest,
+      matchedDripTx,
+    };
+    p.divRecords.push(rec);
+    enrichedDivs.push(rec);
+  });
+
+  let totalMarketValue = 0;
+  let totalActiveCostBasis = 0;
+  let totalActiveShares = 0;
+  let totalBuyOutflow = 0;
+  let totalSellInflowAll = 0;
+  let totalSellInflowExLegacy = 0;
+  let totalGrossDivPaid = 0;
+  let totalWhtPaid = 0;
+  let totalZakatPaid = 0;
+  let totalNetDivPaid = 0;
+  let totalNetDivUnpaid = 0;
+  let totalReinvestedDivNet = 0;
+  let totalRealizedPnL = 0;
+
+  const holdingsList = Object.values(compMap).map((p) => {
+    const wac = p.activeShares > 0 ? p.activeCostBasis / p.activeShares : 0;
+    const marketValue = p.activeShares * p.price;
+    const unrealizedPnL = marketValue - p.activeCostBasis;
+    const unrealizedPct =
+      p.activeCostBasis > 0 ? (unrealizedPnL / p.activeCostBasis) * 100 : 0;
+    const totalReturn = unrealizedPnL + p.realizedPnL + p.netDivPaid;
+    const totalReturnPct =
+      p.activeCostBasis > 0 ? (totalReturn / p.activeCostBasis) * 100 : 0;
+    const yoc =
+      p.activeCostBasis > 0 ? (p.netDivPaid / p.activeCostBasis) * 100 : 0;
+
+    totalMarketValue += marketValue;
+    totalActiveCostBasis += p.activeCostBasis;
+    totalActiveShares += p.activeShares;
+    totalBuyOutflow += p.totalBuyCost;
+    totalSellInflowAll += p.totalSellNet;
+    if (!p.isLegacyLiquidation) totalSellInflowExLegacy += p.totalSellNet;
+    totalGrossDivPaid += p.grossDivPaid;
+    totalWhtPaid += p.whtPaid;
+    totalZakatPaid += p.zakatPaid;
+    totalNetDivPaid += p.netDivPaid;
+    totalNetDivUnpaid += p.netDivUnpaid;
+    totalReinvestedDivNet += p.reinvestedDivNet;
+    totalRealizedPnL += p.realizedPnL;
+
+    p.wac = wac;
+    p.marketValue = marketValue;
+    p.unrealizedPnL = unrealizedPnL;
+    p.unrealizedPct = unrealizedPct;
+    p.totalReturn = totalReturn;
+    p.totalReturnPct = totalReturnPct;
+    p.yoc = yoc;
+    p.weight = 0;
+    return p;
+  });
+
+  holdingsList.forEach((h) => {
+    h.weight =
+      totalMarketValue > 0 ? (h.marketValue / totalMarketValue) * 100 : 0;
+  });
+
+  const includeLegacy = state.settings?.includeLegacyMcbInCashflow !== false;
+  const effectiveSellInflow = includeLegacy
+    ? totalSellInflowAll
+    : totalSellInflowExLegacy;
+  const netCashInvested = totalBuyOutflow - effectiveSellInflow;
+  const totalUnrealizedPnL = totalMarketValue - totalActiveCostBasis;
+  const totalUnrealizedPct =
+    totalActiveCostBasis > 0
+      ? (totalUnrealizedPnL / totalActiveCostBasis) * 100
+      : 0;
+  const allInNetProfit =
+    totalUnrealizedPnL + totalRealizedPnL + totalNetDivPaid;
+  const allInRoiPct =
+    totalActiveCostBasis > 0
+      ? (allInNetProfit / totalActiveCostBasis) * 100
+      : 0;
 
   return {
-    positions,
-    activePositions,
-    exitedPositions,
-    sectors,
-    monthlyDividends,
-    summary: {
-      totalCostBasis,
+    holdings: holdingsList,
+    compMap,
+    transactions: enrichedTxs,
+    dividends: enrichedDivs,
+    monthly: Object.values(monthlyMap).sort((a, b) =>
+      a.ym.localeCompare(b.ym)
+    ),
+    totals: {
+      totalActiveShares,
       totalMarketValue,
-      totalUnrealizedPnl,
-      totalUnrealizedPnlPct:
-        totalCostBasis > 0 ? (totalUnrealizedPnl / totalCostBasis) * 100 : 0,
-      totalRealizedPnl,
-      totalDayChangeValue,
-      totalDayChangePct:
-        totalMarketValue - totalDayChangeValue > 0
-          ? (totalDayChangeValue / (totalMarketValue - totalDayChangeValue)) *
-            100
-          : 0,
-      totalGrossDividendsPaid,
+      totalActiveCostBasis,
+      totalUnrealizedPnL,
+      totalUnrealizedPct,
+      totalRealizedPnL,
+      totalBuyOutflow,
+      effectiveSellInflow,
+      netCashInvested,
+      totalGrossDivPaid,
       totalWhtPaid,
       totalZakatPaid,
-      totalNetDividendsPaid,
-      totalNetDividendsUnpaid,
-      portfolioYieldOnCostPct:
-        totalCostBasis > 0
-          ? (totalNetDividendsPaid / totalCostBasis) * 100
-          : 0,
-      portfolioCurrentYieldPct:
-        totalMarketValue > 0
-          ? (totalMarketValue > 0
-              ? (totalNetDividendsPaid / totalMarketValue) * 100
-              : 0)
-          : 0,
-      totalBuyCashOutflow,
-      totalSellCashInflow,
-      legacyMcbProceeds,
-      netOutOfPocketCapital,
-      totalBrokeragePaid,
-      totalSstPaid,
-      totalAllInclusiveReturn,
-      totalAllInclusiveReturnPct,
-      activeCount: activePositions.length,
-      totalCompanies: state.companies.length,
+      totalTaxWithheld: totalWhtPaid + totalZakatPaid,
+      totalNetDivPaid,
+      totalNetDivUnpaid,
+      totalReinvestedDivNet,
+      allInNetProfit,
+      allInRoiPct,
+      activeHoldingsCount: holdingsList.filter((h) => h.activeShares > 0)
+        .length,
+    },
+  };
+}
+
+// Legacy wrapper for any existing callers
+export function computePortfolioAnalytics(state: PortfolioState) {
+  const res = runAccountingEngine(state);
+  const positions: PositionSummary[] = res.holdings.map((h) => ({
+    ticker: h.ticker,
+    name: h.name,
+    sector: h.sector,
+    frequency: h.frequency,
+    shares: h.activeShares,
+    totalSharesBought: h.totalBuyShares,
+    totalSharesSold: h.totalSellShares,
+    wac: h.wac,
+    costBasis: h.activeCostBasis,
+    livePrice: h.price,
+    ldcp: h.ldcp,
+    dayChange: h.change,
+    dayChangePct: h.changePct,
+    marketValue: h.marketValue,
+    unrealizedPnl: h.unrealizedPnL,
+    unrealizedPnlPct: h.unrealizedPct,
+    realizedPnl: h.realizedPnL,
+    grossDividends: h.grossDivPaid,
+    whtTotal: h.whtPaid,
+    zakatTotal: h.zakatPaid,
+    netDividendsPaid: h.netDivPaid,
+    netDividendsUnpaid: h.netDivUnpaid,
+    totalReturn: h.totalReturn,
+    totalReturnPct: h.totalReturnPct,
+    yieldOnCostPct: h.yoc,
+    currentYieldPct: h.marketValue > 0 ? (h.netDivPaid / h.marketValue) * 100 : 0,
+    weightPct: h.weight,
+    high52: h.high52,
+    dayRange: h.dayRange,
+    volume: h.volume,
+    pe: h.pe,
+    asOf: h.asOf,
+    lots: h.lots.map((l) => ({
+      id: l.id,
+      date: l.date,
+      action: l.action,
+      shares: l.shares,
+      price: l.price,
+      fees: l.brkFees + l.sst,
+      totalAmount: Math.abs(l.netCashFlow),
+      runningShares: l.runningShares,
+      runningWac: l.runningWac,
+      realizedPnl: 0,
+    })),
+  }));
+  return {
+    positions,
+    activePositions: positions.filter((p) => p.shares > 0),
+    exitedPositions: positions.filter((p) => p.shares === 0),
+    sectors: [],
+    monthlyDividends: [],
+    summary: {
+      totalCostBasis: res.totals.totalActiveCostBasis,
+      totalMarketValue: res.totals.totalMarketValue,
+      totalUnrealizedPnl: res.totals.totalUnrealizedPnL,
+      totalUnrealizedPnlPct: res.totals.totalUnrealizedPct,
+      totalRealizedPnl: res.totals.totalRealizedPnL,
+      totalDayChangeValue: 0,
+      totalDayChangePct: 0,
+      totalGrossDividendsPaid: res.totals.totalGrossDivPaid,
+      totalWhtPaid: res.totals.totalWhtPaid,
+      totalZakatPaid: res.totals.totalZakatPaid,
+      totalNetDividendsPaid: res.totals.totalNetDivPaid,
+      totalNetDividendsUnpaid: res.totals.totalNetDivUnpaid,
+      portfolioYieldOnCostPct: 0,
+      portfolioCurrentYieldPct: 0,
+      totalBuyCashOutflow: res.totals.totalBuyOutflow,
+      totalSellCashInflow: res.totals.effectiveSellInflow,
+      legacyMcbProceeds: 78315.33,
+      netOutOfPocketCapital: res.totals.netCashInvested,
+      totalBrokeragePaid: 0,
+      totalSstPaid: 0,
+      totalAllInclusiveReturn: res.totals.allInNetProfit,
+      totalAllInclusiveReturnPct: res.totals.allInRoiPct,
+      activeCount: res.totals.activeHoldingsCount,
+      totalCompanies: res.holdings.length,
     },
   };
 }

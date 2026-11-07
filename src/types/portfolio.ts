@@ -14,6 +14,8 @@ export interface Company {
   asOf: string;
 }
 
+export type CompanyRecord = Company;
+
 export interface Transaction {
   id: number;
   date: string;
@@ -27,6 +29,8 @@ export interface Transaction {
   notes: string;
 }
 
+export type TransactionRecord = Transaction;
+
 export interface Dividend {
   id: number;
   paymentDate: string;
@@ -35,8 +39,8 @@ export interface Dividend {
   term: string;
   sharesEligible: number;
   status: "Paid" | "Unpaid";
-  announcementDate: string;
-  expectedPaymentDate: string;
+  announcementDate?: string;
+  expectedPaymentDate?: string;
   dps: number;
   wht: number;
   zakat: number;
@@ -44,6 +48,8 @@ export interface Dividend {
   reinvestPrice: number;
   announcementId?: string;
 }
+
+export type DividendRecord = Dividend;
 
 export interface PsxAnnouncement {
   id: string;
@@ -61,22 +67,24 @@ export interface PsxAnnouncement {
 }
 
 export interface PortfolioSettings {
-  defaultBrokerageRate: number;
-  minBrokeragePerShare: number;
-  sstRate: number;
-  defaultFilerWhtRate: number;
+  defaultBrokerageRate?: number;
+  minBrokeragePerShare?: number;
+  defaultMinBrkPerShare?: number;
+  sstRate?: number;
+  defaultSstRate?: number;
+  defaultFilerWhtRate?: number;
   includeLegacyMcbInCashflow: boolean;
 }
 
 export interface PortfolioState {
-  version: string;
+  version?: string;
   lastUpdated: string;
-  currency: string;
+  currency?: string;
   settings: PortfolioSettings;
   companies: Company[];
   transactions: Transaction[];
   dividends: Dividend[];
-  announcements: PsxAnnouncement[];
+  announcements?: PsxAnnouncement[];
 }
 
 export interface PositionSummary {
