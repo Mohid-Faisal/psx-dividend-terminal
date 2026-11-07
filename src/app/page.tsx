@@ -95,9 +95,9 @@ export default function HomePage() {
   const [txTicker, setTxTicker] = useState<string>("FFC");
   const [txAction, setTxAction] = useState<"Buy" | "Sell">("Buy");
   const [txShares, setTxShares] = useState<string>("100");
-  const [txPrice, setTxPrice] = useState<string>("238.15");
-  const [txBrk, setTxBrk] = useState<string>("35.72");
-  const [txSst, setTxSst] = useState<string>("5.36");
+  const [txPrice, setTxPrice] = useState<string>("562.62");
+  const [txBrk, setTxBrk] = useState<string>("84.39");
+  const [txSst, setTxSst] = useState<string>("12.66");
   const [txNotes, setTxNotes] = useState<string>("");
 
   // New Dividend Form
@@ -119,10 +119,24 @@ export default function HomePage() {
   const [newCompFreq, setNewCompFreq] = useState<string>("Quarterly");
   const [isAddingCompany, setIsAddingCompany] = useState<boolean>(false);
 
-  // Theme toggle effect
+  // Load saved theme preference
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
+    const saved = window.localStorage.getItem("psx_rune_theme") as
+      | "dark"
+      | "light"
+      | null;
+    if (saved === "light" || saved === "dark") {
+      setTheme(saved);
+      document.documentElement.setAttribute("data-theme", saved);
+    }
+  }, []);
+
+  const handleToggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.setAttribute("data-theme", next);
+    window.localStorage.setItem("psx_rune_theme", next);
+  };
 
   // Load from Supabase
   const reloadFromSupabase = useCallback(async () => {
@@ -136,7 +150,7 @@ export default function HomePage() {
     }
   }, []);
 
-  // Trigger server-side PSX live price & dividend announcement sync
+  // Fast Parallel Server-Side PSX Live Price & Dividend Announcement Sync
   const syncLivePsxQuotes = useCallback(
     async (silent = false) => {
       if (!silent) setIsSyncingPsx(true);
@@ -144,9 +158,17 @@ export default function HomePage() {
         const res = await fetch("/api/psx/sync", { method: "POST" });
         const json = await res.json();
         if (json.ok) {
-          await reloadFromSupabase();
+          // Immediately apply returned live company prices in 0ms!
+          if (Array.isArray(json.companies) && json.companies.length > 0) {
+            setState((prev) => ({
+              ...prev,
+              companies: json.companies,
+              lastUpdated: json.syncedAt || new Date().toISOString(),
+            }));
+          }
           const newAnns = json.newDividendAnnouncements || [];
           if (newAnns.length > 0) {
+            await reloadFromSupabase();
             setToastAlert({
               title: `${newAnns.length} New PSX Dividend Notice${
                 newAnns.length > 1 ? "s" : ""
@@ -156,9 +178,19 @@ export default function HomePage() {
                 .join(", ")} announced a payout notice on PSX.`,
             });
           }
+          const sec = json.durationMs
+            ? `${(json.durationMs / 1000).toFixed(1)}s`
+            : "instant";
           setLastSyncMsg(
-            `PSX Live Quotes Synced (${json.updatedCount} tickers)`
+            `Live PSX Synced (${json.updatedCount} tickers in ${sec})`
           );
+          if (!silent) {
+            setToastAlert({
+              title: `Live PSX Prices Updated (${json.updatedCount} Stocks in ${sec})`,
+              subtitle:
+                "All live quotes and corporate dividend notices are up to date.",
+            });
+          }
         }
       } catch (e) {
         console.error("PSX sync error:", e);
@@ -169,11 +201,15 @@ export default function HomePage() {
     [reloadFromSupabase]
   );
 
-  // Initial load + Realtime subscription + Background PSX sync
+  // Initial load + Realtime subscription + 60s Live Price Auto-Refresh
   useEffect(() => {
     reloadFromSupabase().then(() => {
       syncLivePsxQuotes(true);
     });
+
+    const pollInterval = setInterval(() => {
+      syncLivePsxQuotes(true);
+    }, 60000);
 
     const channel = supabase
       .channel("psx-realtime-sync")
@@ -207,6 +243,7 @@ export default function HomePage() {
       });
 
     return () => {
+      clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
   }, [reloadFromSupabase, syncLivePsxQuotes]);
@@ -223,7 +260,6 @@ export default function HomePage() {
     setTxSst(sst.toFixed(2));
   }, [txShares, txPrice]);
 
-  // Auto-fill current live price when user switches ticker in Trade form
   const handleSelectTxTicker = (sym: string) => {
     setTxTicker(sym);
     const comp = state.companies.find((c) => c.ticker === sym);
@@ -232,7 +268,6 @@ export default function HomePage() {
     }
   };
 
-  // Auto-fill active shares & 15% WHT in Dividend form
   const handleSelectDivTicker = (sym: string) => {
     setDivTicker(sym);
     const pos = analytics.positions.find((p) => p.ticker === sym);
@@ -248,7 +283,6 @@ export default function HomePage() {
     setDivWht(Math.round(sh * dpsVal * 0.15).toString());
   }, [divShares, divDps]);
 
-  // Toggle Legacy MCB Cashflow setting in Supabase
   const handleToggleLegacyMcb = async () => {
     const nextVal = !state.settings.includeLegacyMcbInCashflow;
     setState((prev) => ({
@@ -264,7 +298,7 @@ export default function HomePage() {
       .eq("id", 1);
   };
 
-  // Add Transaction (Instant Supabase Insert)
+  // Optimistic + Instant Supabase Insert for Transactions
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     const shares = parseFloat(txShares) || 0;
@@ -276,21 +310,42 @@ export default function HomePage() {
     const comp = state.companies.find((c) => c.ticker === txTicker);
     const companyName = comp ? comp.name : txTicker;
 
-    const { error } = await supabase.from("psx_transactions").insert({
-      date: txDate,
-      ticker: txTicker,
-      company: companyName,
-      action: txAction,
-      shares,
-      price,
-      brk_fees: brkFees,
-      sst,
-      notes: txNotes.trim(),
-    });
+    const { data, error } = await supabase
+      .from("psx_transactions")
+      .insert({
+        date: txDate,
+        ticker: txTicker,
+        company: companyName,
+        action: txAction,
+        shares,
+        price,
+        brk_fees: brkFees,
+        sst,
+        notes: txNotes.trim(),
+      })
+      .select()
+      .single();
 
-    if (!error) {
+    if (!error && data) {
       setTxNotes("");
-      await reloadFromSupabase();
+      setState((prev) => ({
+        ...prev,
+        transactions: [
+          ...prev.transactions,
+          {
+            id: Number(data.id),
+            date: data.date,
+            ticker: data.ticker,
+            company: data.company,
+            action: data.action,
+            shares: Number(data.shares),
+            price: Number(data.price),
+            brkFees: Number(data.brk_fees),
+            sst: Number(data.sst),
+            notes: data.notes || "",
+          },
+        ],
+      }));
       setToastAlert({
         title: `${txAction} Order Logged (${txTicker})`,
         subtitle: `${shares} shares @ Rs. ${price.toFixed(
@@ -300,18 +355,23 @@ export default function HomePage() {
     }
   };
 
-  // Delete Transaction (Instant Supabase Delete — fixes cross-laptop delete issue!)
+  // Instant Optimistic + Cloud Delete for Transactions
   const handleDeleteTransaction = async (id: number, ticker: string) => {
+    setState((prev) => ({
+      ...prev,
+      transactions: prev.transactions.filter((t) => t.id !== id),
+    }));
     const { error } = await supabase
       .from("psx_transactions")
       .delete()
       .eq("id", id);
     if (!error) {
-      await reloadFromSupabase();
       setToastAlert({
         title: `Transaction #${id} (${ticker}) Deleted`,
         subtitle: "Removed permanently from Supabase cloud database.",
       });
+    } else {
+      await reloadFromSupabase();
     }
   };
 
@@ -324,25 +384,50 @@ export default function HomePage() {
     const zakat = parseFloat(divZakat) || 0;
     if (!divTicker || sharesEligible <= 0 || dps <= 0) return;
 
-    const { error } = await supabase.from("psx_dividends").insert({
-      payment_date: divStatus === "Paid" ? divPayDate : "",
-      ticker: divTicker,
-      year: divYear,
-      term: divTerm,
-      shares_eligible: sharesEligible,
-      status: divStatus,
-      announcement_date:
-        divStatus === "Unpaid" ? new Date().toISOString().slice(0, 10) : "",
-      expected_payment_date: divStatus === "Unpaid" ? divPayDate : "",
-      dps,
-      wht,
-      zakat,
-      reinvest: "No",
-      reinvest_price: 0,
-    });
+    const { data, error } = await supabase
+      .from("psx_dividends")
+      .insert({
+        payment_date: divStatus === "Paid" ? divPayDate : "",
+        ticker: divTicker,
+        year: divYear,
+        term: divTerm,
+        shares_eligible: sharesEligible,
+        status: divStatus,
+        announcement_date:
+          divStatus === "Unpaid" ? new Date().toISOString().slice(0, 10) : "",
+        expected_payment_date: divStatus === "Unpaid" ? divPayDate : "",
+        dps,
+        wht,
+        zakat,
+        reinvest: "No",
+        reinvest_price: 0,
+      })
+      .select()
+      .single();
 
-    if (!error) {
-      await reloadFromSupabase();
+    if (!error && data) {
+      setState((prev) => ({
+        ...prev,
+        dividends: [
+          ...prev.dividends,
+          {
+            id: Number(data.id),
+            paymentDate: data.payment_date || "",
+            ticker: data.ticker,
+            year: data.year || "",
+            term: data.term || "Q1",
+            sharesEligible: Number(data.shares_eligible),
+            status: data.status,
+            announcementDate: data.announcement_date || "",
+            expectedPaymentDate: data.expected_payment_date || "",
+            dps: Number(data.dps),
+            wht: Number(data.wht),
+            zakat: Number(data.zakat),
+            reinvest: "No",
+            reinvestPrice: 0,
+          },
+        ],
+      }));
       setToastAlert({
         title: `Dividend Entry Added (${divTicker})`,
         subtitle: `Status: ${divStatus} • DPS Rs. ${dps.toFixed(2)}`,
@@ -353,37 +438,43 @@ export default function HomePage() {
   // Mark Unpaid Dividend as Paid with Payment Date
   const handleConfirmMarkPaid = async () => {
     if (!markPaidModalDiv) return;
-    const { error } = await supabase
+    const targetId = markPaidModalDiv.id;
+    const targetTicker = markPaidModalDiv.ticker;
+    setState((prev) => ({
+      ...prev,
+      dividends: prev.dividends.map((d) =>
+        d.id === targetId
+          ? { ...d, status: "Paid", paymentDate: markPaidDate }
+          : d
+      ),
+    }));
+    setMarkPaidModalDiv(null);
+
+    await supabase
       .from("psx_dividends")
       .update({
         status: "Paid",
         payment_date: markPaidDate,
       })
-      .eq("id", markPaidModalDiv.id);
+      .eq("id", targetId);
 
-    if (!error) {
-      setMarkPaidModalDiv(null);
-      await reloadFromSupabase();
-      setToastAlert({
-        title: `${markPaidModalDiv.ticker} Dividend Marked as PAID!`,
-        subtitle: `Credited on ${markPaidDate} and added to realized dividend cashflow.`,
-      });
-    }
+    setToastAlert({
+      title: `${targetTicker} Dividend Marked as PAID!`,
+      subtitle: `Credited on ${markPaidDate} and added to realized dividend cashflow.`,
+    });
   };
 
   // Delete Dividend
   const handleDeleteDividend = async (id: number, ticker: string) => {
-    const { error } = await supabase
-      .from("psx_dividends")
-      .delete()
-      .eq("id", id);
-    if (!error) {
-      await reloadFromSupabase();
-      setToastAlert({
-        title: `Dividend Entry (${ticker}) Deleted`,
-        subtitle: "Removed from Supabase cloud database.",
-      });
-    }
+    setState((prev) => ({
+      ...prev,
+      dividends: prev.dividends.filter((d) => d.id !== id),
+    }));
+    await supabase.from("psx_dividends").delete().eq("id", id);
+    setToastAlert({
+      title: `Dividend Entry (${ticker}) Deleted`,
+      subtitle: "Removed from Supabase cloud database.",
+    });
   };
 
   // Queue PSX Announcement into Unpaid Dividends
@@ -570,7 +661,7 @@ export default function HomePage() {
                 <h1 className="text-base sm:text-lg font-bold tracking-tight">
                   PSX Dividend &amp; Equity Terminal
                 </h1>
-                <span className="px-2 py-0.5 text-[10px] font-mono-num uppercase tracking-wider rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                <span className="px-2 py-0.5 text-[10px] font-mono-num uppercase tracking-wider rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
                   Rune Edition
                 </span>
               </div>
@@ -579,8 +670,8 @@ export default function HomePage() {
                   <span
                     className={`w-2 h-2 rounded-full ${
                       realtimeStatus === "SUBSCRIBED"
-                        ? "bg-emerald-400 animate-pulse"
-                        : "bg-amber-400"
+                        ? "bg-emerald-500 animate-pulse"
+                        : "bg-amber-500"
                     }`}
                   />
                   Supabase Realtime:{" "}
@@ -623,30 +714,36 @@ export default function HomePage() {
               </span>
             </button>
 
-            {/* Live PSX Sync Button */}
+            {/* Fast Parallel Live PSX Sync Button */}
             <button
               onClick={() => syncLivePsxQuotes(false)}
               disabled={isSyncingPsx}
-              className="rune-pill px-3.5 py-1.5 text-xs font-medium flex items-center gap-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/40 cursor-pointer disabled:opacity-60"
+              className="rune-pill px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/40 cursor-pointer disabled:opacity-60"
             >
               <RefreshCw
                 className={`w-3.5 h-3.5 ${isSyncingPsx ? "animate-spin" : ""}`}
               />
               {isSyncingPsx
-                ? "Scraping Live PSX..."
+                ? "Syncing 27 Tickers..."
                 : "Sync Live PSX & Notices"}
             </button>
 
             {/* Theme Switch */}
             <button
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              className="rune-pill p-2 text-slate-300 hover:text-white cursor-pointer"
+              onClick={handleToggleTheme}
+              className="rune-pill px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 text-slate-300 cursor-pointer"
               title="Toggle Dark / Light Specular Theme"
             >
               {theme === "dark" ? (
-                <Sun className="w-4 h-4 text-amber-300" />
+                <>
+                  <Sun className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Light</span>
+                </>
               ) : (
-                <Moon className="w-4 h-4 text-indigo-600" />
+                <>
+                  <Moon className="w-3.5 h-3.5 text-indigo-300" />
+                  <span>Dark</span>
+                </>
               )}
             </button>
           </div>
@@ -687,7 +784,7 @@ export default function HomePage() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as TabId)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
                   active
                     ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm"
                     : "text-slate-400 hover:text-slate-200 hover:bg-white/5 border border-transparent"
@@ -716,7 +813,7 @@ export default function HomePage() {
             </div>
             <button
               onClick={() => setToastAlert(null)}
-              className="text-xs text-slate-400 hover:text-white cursor-pointer"
+              className="text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Dismiss
             </button>
@@ -731,8 +828,8 @@ export default function HomePage() {
           {/* Card 1: Market Value */}
           <div className="rune-card p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Live Market Value</span>
-              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-mono-num">
+              <span className="font-medium">Live Market Value</span>
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-mono-num font-bold">
                 LIVE PSX
               </span>
             </div>
@@ -743,7 +840,7 @@ export default function HomePage() {
               })}
             </div>
             <div
-              className={`text-xs font-mono-num mt-1 flex items-center gap-1 ${
+              className={`text-xs font-mono-num mt-1 flex items-center gap-1 font-medium ${
                 summary.totalDayChangeValue >= 0
                   ? "text-emerald-400"
                   : "text-rose-400"
@@ -763,8 +860,8 @@ export default function HomePage() {
           {/* Card 2: Active Cost Basis */}
           <div className="rune-card p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Active Cost Basis (WAC)</span>
-              <span className="font-mono-num text-[11px] text-indigo-300">
+              <span className="font-medium">Active Cost Basis (WAC)</span>
+              <span className="font-mono-num text-[11px] font-bold text-indigo-300">
                 {summary.activeCount} Active
               </span>
             </div>
@@ -786,9 +883,9 @@ export default function HomePage() {
           {/* Card 3: Unrealized & Realized P&L */}
           <div className="rune-card p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Unrealized Capital P&amp;L</span>
+              <span className="font-medium">Unrealized Capital P&amp;L</span>
               <span
-                className={`font-mono-num text-xs font-semibold ${
+                className={`font-mono-num text-xs font-bold ${
                   summary.totalUnrealizedPnlPct >= 0
                     ? "text-emerald-400"
                     : "text-rose-400"
@@ -810,7 +907,7 @@ export default function HomePage() {
             </div>
             <div className="text-xs text-slate-400 mt-1 font-mono-num">
               Realized (ALTN):{" "}
-              <span className="text-rose-400">
+              <span className="text-rose-400 font-semibold">
                 Rs. {Math.round(summary.totalRealizedPnl).toLocaleString()}
               </span>
             </div>
@@ -818,9 +915,9 @@ export default function HomePage() {
 
           {/* Card 4: Net Dividends Paid */}
           <div className="rune-card-rose p-4">
-            <div className="flex items-center justify-between text-xs text-amber-300/90">
-              <span>Net Dividends Paid</span>
-              <span className="font-mono-num text-[11px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">
+            <div className="flex items-center justify-between text-xs text-amber-300">
+              <span className="font-semibold">Net Dividends Paid</span>
+              <span className="font-mono-num text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">
                 YoC {summary.portfolioYieldOnCostPct.toFixed(2)}%
               </span>
             </div>
@@ -831,15 +928,16 @@ export default function HomePage() {
               })}
             </div>
             <div className="text-xs text-slate-300 mt-1 font-mono-num">
-              Gross: Rs. {Math.round(summary.totalGrossDividendsPaid).toLocaleString()}{" "}
-              • WHT: Rs. {Math.round(summary.totalWhtPaid).toLocaleString()}
+              Gross: Rs.{" "}
+              {Math.round(summary.totalGrossDividendsPaid).toLocaleString()} •
+              WHT: Rs. {Math.round(summary.totalWhtPaid).toLocaleString()}
             </div>
           </div>
 
           {/* Card 5: Total All-Inclusive Return */}
           <div className="rune-card p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>All-Inclusive Return</span>
+              <span className="font-medium">All-Inclusive Return</span>
               <span className="text-[11px] font-mono-num text-slate-400">
                 Cap + Div + Realized
               </span>
@@ -863,10 +961,10 @@ export default function HomePage() {
           {/* Card 6: Net Out-of-Pocket Capital + Rune Switch for Legacy MCB */}
           <div className="rune-card p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Net Out-of-Pocket Cash</span>
+              <span className="font-medium">Net Out-of-Pocket Cash</span>
               <button
                 onClick={handleToggleLegacyMcb}
-                className={`px-2 py-0.5 rounded-full text-[10px] font-semibold cursor-pointer border transition-all ${
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer border transition-all ${
                   state.settings.includeLegacyMcbInCashflow
                     ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
                     : "bg-white/5 text-slate-400 border-white/10"
@@ -877,8 +975,7 @@ export default function HomePage() {
               </button>
             </div>
             <div className="font-mono-num text-xl font-bold mt-1.5">
-              Rs.{" "}
-              {Math.round(summary.netOutOfPocketCapital).toLocaleString()}
+              Rs. {Math.round(summary.netOutOfPocketCapital).toLocaleString()}
             </div>
             <div className="text-[11px] text-slate-400 mt-1 font-mono-num">
               {state.settings.includeLegacyMcbInCashflow
@@ -891,7 +988,6 @@ export default function HomePage() {
         {/* TAB 1: EXECUTIVE DASHBOARD */}
         {activeTab === "dashboard" && (
           <div className="space-y-5">
-            {/* Top 2-Column Visual Grid: Monthly Dividends + Sector Concentration */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
               <div className="lg:col-span-7">
                 <MonthlyDividendChart
@@ -913,13 +1009,11 @@ export default function HomePage() {
               </div>
             </div>
 
-            {/* 3D WebGL Portfolio Value & Dividend Towers */}
             <Portfolio3DTowers
               positions={analytics.activePositions}
               onSelectTicker={(sym) => setModalTicker(sym)}
             />
 
-            {/* Stock Profit/Loss & Dividend Leaderboard */}
             <StockLeaderboardChart
               positions={analytics.activePositions}
               onSelectTicker={(sym) => setModalTicker(sym)}
@@ -997,7 +1091,7 @@ export default function HomePage() {
                           <span className="font-mono-num font-bold text-indigo-300 text-sm">
                             {pos.ticker}
                           </span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-400">
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-slate-400 font-semibold">
                             {pos.weightPct.toFixed(1)}%
                           </span>
                         </div>
@@ -1008,22 +1102,25 @@ export default function HomePage() {
                       <td className="py-3 px-3 text-right font-semibold">
                         {pos.shares.toLocaleString()}
                       </td>
-                      <td className="py-3 px-3 text-right text-slate-300">
+                      <td className="py-3 px-3 text-right text-slate-200 font-medium">
                         Rs. {pos.wac.toFixed(2)}
                       </td>
-                      <td className="py-3 px-3 text-right text-slate-300">
+                      <td className="py-3 px-3 text-right text-slate-200 font-medium">
                         Rs. {Math.round(pos.costBasis).toLocaleString()}
                       </td>
-                      {/* Read-Only Live Price — Zero Edit Icons */}
-                      <td className="py-3 px-3 text-right">
-                        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/25">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                          <span className="font-bold text-white">
+                      {/* Read-Only Live Price — Crisp High-Contrast in both Dark & Light Mode */}
+                      <td
+                        className="py-3 px-3 text-right"
+                        title={pos.asOf || "Live PSX Feed"}
+                      >
+                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/35">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          <span className="font-bold text-emerald-300">
                             Rs. {pos.livePrice.toFixed(2)}
                           </span>
                         </div>
                         <div
-                          className={`text-[10px] mt-0.5 ${
+                          className={`text-[10px] mt-0.5 font-semibold ${
                             pos.dayChange >= 0
                               ? "text-emerald-400"
                               : "text-rose-400"
@@ -1070,7 +1167,7 @@ export default function HomePage() {
                         {pos.totalReturn >= 0 ? "+" : ""}Rs.{" "}
                         {Math.round(pos.totalReturn).toLocaleString()}
                       </td>
-                      <td className="py-3 px-3 text-right text-amber-200">
+                      <td className="py-3 px-3 text-right text-amber-300 font-semibold">
                         {pos.yieldOnCostPct.toFixed(2)}%
                       </td>
                     </tr>
@@ -1079,7 +1176,6 @@ export default function HomePage() {
               </table>
             </div>
 
-            {/* Exited Positions Note */}
             {analytics.exitedPositions.length > 0 && (
               <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between text-xs text-slate-400">
                 <div>
@@ -1104,7 +1200,6 @@ export default function HomePage() {
         {/* TAB 3: TRADE LEDGER (BUY / SELL CRUD WITH INSTANT SUPABASE SYNC) */}
         {activeTab === "transactions" && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-            {/* Left Form: Log Buy / Sell */}
             <div className="lg:col-span-4">
               <form
                 onSubmit={handleAddTransaction}
@@ -1249,7 +1344,6 @@ export default function HomePage() {
               </form>
             </div>
 
-            {/* Right Table: Full Transaction History */}
             <div className="lg:col-span-8 rune-card p-5">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <div>
@@ -1366,7 +1460,6 @@ export default function HomePage() {
         {/* TAB 4: DIVIDEND VAULT & PSX ANNOUNCEMENT MONITOR */}
         {activeTab === "dividends" && (
           <div className="space-y-5">
-            {/* Live PSX Dividend Announcement Monitor Feed */}
             <div className="rune-card-rose p-5">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
                 <div>
@@ -1380,7 +1473,7 @@ export default function HomePage() {
                   </h3>
                   <p className="text-xs text-slate-300">
                     Scraped directly from{" "}
-                    <code className="text-amber-200">
+                    <code className="text-amber-300 font-semibold">
                       dps.psx.com.pk/company/&#123;SYMBOL&#125;
                     </code>{" "}
                     for your held stocks. Queue any announcement to{" "}
@@ -1391,7 +1484,7 @@ export default function HomePage() {
                 <button
                   onClick={() => syncLivePsxQuotes(false)}
                   disabled={isSyncingPsx}
-                  className="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  className="px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
                 >
                   <RefreshCw
                     className={`w-3.5 h-3.5 ${
@@ -1430,10 +1523,9 @@ export default function HomePage() {
                             href={ann.pdfUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-indigo-300 hover:underline inline-flex items-center gap-1"
+                            className="text-indigo-300 hover:underline inline-flex items-center gap-1 font-medium"
                           >
-                            PSX Notice PDF{" "}
-                            <ExternalLink className="w-3 h-3" />
+                            PSX Notice PDF <ExternalLink className="w-3 h-3" />
                           </a>
                         ) : (
                           <span className="text-slate-500">PSX Notice</span>
@@ -1448,7 +1540,7 @@ export default function HomePage() {
                             onClick={() =>
                               handleQueueAnnouncementToDividend(ann)
                             }
-                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-semibold cursor-pointer"
+                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-semibold cursor-pointer"
                           >
                             + Queue as Unpaid Dividend
                           </button>
@@ -1460,14 +1552,15 @@ export default function HomePage() {
               ) : (
                 <div className="text-xs text-slate-300 py-4 px-4 rounded-xl bg-black/25 border border-white/5">
                   Click{" "}
-                  <strong>&ldquo;Scan PSX for New Dividend Notices&rdquo;</strong>{" "}
+                  <strong>
+                    &ldquo;Scan PSX for New Dividend Notices&rdquo;
+                  </strong>{" "}
                   above to scrape live corporate dividend &amp; book-closure
                   notices across all 27 PSX companies.
                 </div>
               )}
             </div>
 
-            {/* Bottom Grid: Add Dividend Form + Dividend Vault Table */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
               <div className="lg:col-span-4">
                 <form
@@ -1625,7 +1718,6 @@ export default function HomePage() {
                 </form>
               </div>
 
-              {/* Right Table: Dividend Ledger with 1-Click Mark Paid */}
               <div className="lg:col-span-8 rune-card p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                   <div>
@@ -1751,7 +1843,6 @@ export default function HomePage() {
         {activeTab === "companies" && (
           <div className="space-y-5">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              {/* Left: Add New PSX Ticker + Cloud Actions */}
               <div className="lg:col-span-4 space-y-4">
                 <form
                   onSubmit={handleAddCompany}
@@ -1766,11 +1857,17 @@ export default function HomePage() {
                     </h3>
                     <p className="text-xs text-slate-400">
                       Enter any PSX symbol (e.g.{" "}
-                      <code className="text-indigo-300">LUCK</code>,{" "}
-                      <code className="text-indigo-300">SYS</code>,{" "}
-                      <code className="text-indigo-300">MARI</code>) and our
-                      server will automatically pull its live price, sector, 52W
-                      range, and dividend notices!
+                      <code className="text-indigo-300 font-semibold">
+                        LUCK
+                      </code>
+                      ,{" "}
+                      <code className="text-indigo-300 font-semibold">SYS</code>
+                      ,{" "}
+                      <code className="text-indigo-300 font-semibold">
+                        MARI
+                      </code>
+                      ) and our server will automatically pull its live price,
+                      sector, 52W range, and dividend notices!
                     </p>
                   </div>
 
@@ -1831,7 +1928,6 @@ export default function HomePage() {
                   </button>
                 </form>
 
-                {/* Cloud Backup & Restore Card */}
                 <div className="rune-card p-5 space-y-3">
                   <div className="flex items-center gap-2">
                     <Cloud className="w-4 h-4 text-emerald-400" />
@@ -1870,7 +1966,6 @@ export default function HomePage() {
                 </div>
               </div>
 
-              {/* Right: 27 PSX Companies Directory (Strictly Read-Only Live Prices) */}
               <div className="lg:col-span-8 rune-card p-5">
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
                   <div>
@@ -1921,7 +2016,7 @@ export default function HomePage() {
                             Rs. {c.price.toFixed(2)}
                           </td>
                           <td
-                            className={`py-2.5 px-2.5 text-right ${
+                            className={`py-2.5 px-2.5 text-right font-semibold ${
                               c.change >= 0
                                 ? "text-emerald-400"
                                 : "text-rose-400"

@@ -11,6 +11,20 @@ export const LEGACY_MCB_SALE = {
   netProceeds: 78315.33,
 };
 
+export function isLegacyMcbPreLedgerSale(tx: {
+  ticker: string;
+  action: string;
+  shares: number;
+  date: string;
+}): boolean {
+  return (
+    tx.ticker === "MCB" &&
+    tx.action === "Sell" &&
+    Math.round(Number(tx.shares)) === 219 &&
+    tx.date === "2025-11-25"
+  );
+}
+
 export function computeBrokerageAndSst(
   shares: number,
   price: number,
@@ -27,9 +41,10 @@ export function computeBrokerageAndSst(
 export function computePortfolioAnalytics(state: PortfolioState) {
   const companyMap = new Map(state.companies.map((c) => [c.ticker, c]));
 
-  // Sort transactions chronologically by date, then id
+  // Sort transactions chronologically by date, then Buy before Sell on same date, then id
   const sortedTxns = [...state.transactions].sort((a, b) => {
     if (a.date !== b.date) return a.date.localeCompare(b.date);
+    if (a.action !== b.action) return a.action === "Buy" ? -1 : 1;
     return a.id - b.id;
   });
 
@@ -79,6 +94,11 @@ export function computePortfolioAnalytics(state: PortfolioState) {
   let totalSstPaid = 0;
 
   for (const tx of sortedTxns) {
+    // Skip legacy pre-ledger MCB 219-share sale from active position cost basis (handled via MCB cashflow toggle)
+    if (isLegacyMcbPreLedgerSale(tx)) {
+      continue;
+    }
+
     let pos = posMap.get(tx.ticker);
     if (!pos) {
       const fallbackComp = companyMap.get(tx.ticker);
@@ -407,7 +427,9 @@ export function computePortfolioAnalytics(state: PortfolioState) {
           : 0,
       portfolioCurrentYieldPct:
         totalMarketValue > 0
-          ? (totalNetDividendsPaid / totalMarketValue) * 100
+          ? (totalMarketValue > 0
+              ? (totalNetDividendsPaid / totalMarketValue) * 100
+              : 0)
           : 0,
       totalBuyCashOutflow,
       totalSellCashInflow,

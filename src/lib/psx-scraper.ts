@@ -53,7 +53,6 @@ export function parseDividendFromAnnouncement(
     lower.includes("credit of") ||
     lower.includes("dispatch of dividend");
 
-  // Try to parse DPS if mentioned in title (e.g. "Rs. 2.50 per share" or "25%")
   let parsedDps: number | null = null;
   const rsMatch = title.match(/Rs\.?\s*(\d+(?:\.\d+)?)/i);
   if (rsMatch) {
@@ -61,11 +60,23 @@ export function parseDividendFromAnnouncement(
   }
 
   let parsedTerm = "Q1";
-  if (lower.includes("final") || lower.includes("annual") || lower.includes("year ended")) {
+  if (
+    lower.includes("final") ||
+    lower.includes("annual") ||
+    lower.includes("year ended")
+  ) {
     parsedTerm = "YR";
-  } else if (lower.includes("half year") || lower.includes("second quarter") || lower.includes("2nd quarter")) {
+  } else if (
+    lower.includes("half year") ||
+    lower.includes("second quarter") ||
+    lower.includes("2nd quarter")
+  ) {
     parsedTerm = "HYR";
-  } else if (lower.includes("third quarter") || lower.includes("3rd quarter") || lower.includes("nine months")) {
+  } else if (
+    lower.includes("third quarter") ||
+    lower.includes("3rd quarter") ||
+    lower.includes("nine months")
+  ) {
     parsedTerm = "Q3";
   } else if (lower.includes("first quarter") || lower.includes("1st quarter")) {
     parsedTerm = "Q1";
@@ -74,7 +85,6 @@ export function parseDividendFromAnnouncement(
   const yrMatch = title.match(/202[4-9]/);
   const parsedYear = yrMatch ? yrMatch[0] : new Date().getFullYear().toString();
 
-  // Deterministic unique ID for announcement
   const docMatch = pdfUrl.match(/(\d+)\.pdf/);
   const slug = docMatch
     ? docMatch[1]
@@ -113,6 +123,7 @@ export async function scrapePsxCompany(
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         Accept: "text/html,application/xhtml+xml",
       },
+      signal: AbortSignal.timeout(4500),
       cache: "no-store",
     });
 
@@ -128,15 +139,21 @@ export async function scrapePsxCompany(
 
     // Company name
     const nameMatch = html.match(/class="quote__name"[^>]*>([\s\S]*?)<\/div>/i);
-    const rawName = nameMatch ? stripTags(nameMatch[1]).replace(/\([A-Z0-9]+\).*$/, "").trim() : undefined;
+    const rawName = nameMatch
+      ? stripTags(nameMatch[1]).replace(/\([A-Z0-9]+\).*$/, "").trim()
+      : undefined;
 
     // Sector
-    const sectorMatch = html.match(/class="quote__sector"[^>]*>([\s\S]*?)<\/div>/i);
+    const sectorMatch = html.match(
+      /class="quote__sector"[^>]*>([\s\S]*?)<\/div>/i
+    );
     const sector = sectorMatch ? stripTags(sectorMatch[1]) : "OTHER";
 
     // As of timestamp
     const dateMatch = html.match(/class="quote__date"[^>]*>([\s\S]*?)<\/div>/i);
-    const asOf = dateMatch ? stripTags(dateMatch[1]) : `Synced ${new Date().toLocaleTimeString()}`;
+    const asOf = dateMatch
+      ? stripTags(dateMatch[1]).replace(/^\^\s*/, "")
+      : `Synced ${new Date().toLocaleTimeString()}`;
 
     // Parse stats_item blocks
     const statsRegex =
@@ -155,12 +172,16 @@ export async function scrapePsxCompany(
     const changePct = ldcp > 0 ? Number(((change / ldcp) * 100).toFixed(2)) : 0;
 
     const high52Key = Object.keys(statsMap).find((k) => k.includes("52-WEEK"));
-    const dayRangeKey = Object.keys(statsMap).find((k) => k.includes("DAY RANGE"));
+    const dayRangeKey = Object.keys(statsMap).find((k) =>
+      k.includes("DAY RANGE")
+    );
     const peKey = Object.keys(statsMap).find((k) => k.includes("P/E"));
     const volKey = Object.keys(statsMap).find((k) => k.includes("VOLUME"));
 
     const high52 = high52Key ? cleanRangeText(statsMap[high52Key]) : "N/A";
-    const dayRange = dayRangeKey ? cleanRangeText(statsMap[dayRangeKey]) : "N/A";
+    const dayRange = dayRangeKey
+      ? cleanRangeText(statsMap[dayRangeKey])
+      : "N/A";
     const pe = peKey ? statsMap[peKey] : "N/A";
     const volume = volKey ? statsMap[volKey] : "0";
 
@@ -168,7 +189,7 @@ export async function scrapePsxCompany(
     const announcements: PsxAnnouncement[] = [];
     const annIdx = html.indexOf('id="announcements"');
     if (annIdx !== -1) {
-      const slice = html.slice(annIdx, annIdx + 35000);
+      const slice = html.slice(annIdx, annIdx + 30000);
       const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
       let rm: RegExpExecArray | null;
       while ((rm = rowRegex.exec(slice)) !== null) {
@@ -182,9 +203,15 @@ export async function scrapePsxCompany(
         if (cells.length >= 2) {
           const dateText = stripTags(cells[0]);
           const titleText = stripTags(cells[1]);
-          const pdfMatch = rowHtml.match(/href="(\/download\/document\/[^"]+\.pdf)"/i);
+          const pdfMatch = rowHtml.match(
+            /href="(\/download\/document\/[^"]+\.pdf)"/i
+          );
           const pdfUrl = pdfMatch ? pdfMatch[1] : "";
-          if (dateText && titleText && !dateText.toLowerCase().includes("date")) {
+          if (
+            dateText &&
+            titleText &&
+            !dateText.toLowerCase().includes("date")
+          ) {
             announcements.push(
               parseDividendFromAnnouncement(sym, dateText, titleText, pdfUrl)
             );
@@ -206,7 +233,7 @@ export async function scrapePsxCompany(
       dayRange,
       volume,
       asOf,
-      announcements: announcements.slice(0, 15),
+      announcements: announcements.slice(0, 12),
     };
   } catch {
     return null;
