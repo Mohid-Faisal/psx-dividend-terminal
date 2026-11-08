@@ -1,11 +1,30 @@
 @import "tailwindcss";
 
 :root,
+[data-theme="light"] {
+  --bg-canvas: #f1f4f9;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f8fafc;
+  --bg-glass: rgba(255, 255, 255, 0.94);
+  --bg-subtle: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #1e293b;
+  --text-muted: #475569;
+  --border-chrome-top: rgba(15, 23, 42, 0.14);
+  --border-chrome-side: rgba(15, 23, 42, 0.09);
+  --border-chrome-bottom: rgba(15, 23, 42, 0.06);
+  --border-rose-top: rgba(217, 119, 6, 0.35);
+  --border-rose-side: rgba(217, 119, 6, 0.18);
+  --shadow-card: 0 4px 20px -4px rgba(15, 23, 42, 0.06),
+    0 1px 3px 0 rgba(15, 23, 42, 0.04),
+    inset 0 1px 0 0 rgba(255, 255, 255, 1);
+}
+
 [data-theme="dark"] {
   --bg-canvas: #08090c;
   --bg-surface: #0f1117;
   --bg-elevated: #151821;
-  --bg-glass: rgba(15, 17, 23, 0.85);
+  --bg-glass: rgba(15, 17, 23, 0.88);
   --bg-subtle: rgba(255, 255, 255, 0.03);
   --text-primary: #f3f5f8;
   --text-secondary: #cbd5e1;
@@ -17,25 +36,6 @@
   --border-rose-side: rgba(244, 162, 142, 0.16);
   --shadow-card: 0 14px 34px -10px rgba(0, 0, 0, 0.65),
     inset 0 1px 0 0 rgba(255, 255, 255, 0.14);
-}
-
-[data-theme="light"] {
-  --bg-canvas: #eef2f6;
-  --bg-surface: #ffffff;
-  --bg-elevated: #f8fafc;
-  --bg-glass: rgba(255, 255, 255, 0.92);
-  --bg-subtle: #f1f5f9;
-  --text-primary: #0f172a;
-  --text-secondary: #1e293b;
-  --text-muted: #475569;
-  --border-chrome-top: rgba(15, 23, 42, 0.16);
-  --border-chrome-side: rgba(15, 23, 42, 0.11);
-  --border-chrome-bottom: rgba(15, 23, 42, 0.08);
-  --border-rose-top: rgba(217, 119, 6, 0.38);
-  --border-rose-side: rgba(217, 119, 6, 0.2);
-  --shadow-card: 0 8px 24px -6px rgba(15, 23, 42, 0.07),
-    0 2px 6px -1px rgba(15, 23, 42, 0.04),
-    inset 0 1px 0 0 rgba(255, 255, 255, 1);
 }
 
 * {
@@ -86,6 +86,14 @@ body {
   border-radius: 16px;
 }
 
+.rune-header {
+  background: var(--bg-glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border-chrome-bottom);
+  box-shadow: 0 2px 14px -3px rgba(15, 23, 42, 0.05);
+}
+
 .rune-pill {
   background: var(--bg-elevated);
   border-top: 1px solid var(--border-chrome-top);
@@ -93,7 +101,27 @@ body {
   border-right: 1px solid var(--border-chrome-side);
   border-bottom: 1px solid var(--border-chrome-bottom);
   border-radius: 9999px;
+  color: var(--text-secondary);
   transition: all 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rune-pill:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.rune-pill-active {
+  background: rgba(99, 102, 241, 0.12) !important;
+  border-color: rgba(99, 102, 241, 0.45) !important;
+  color: #4338ca !important;
+  box-shadow: 0 1px 6px -1px rgba(99, 102, 241, 0.2);
+}
+
+[data-theme="dark"] .rune-pill-active {
+  background: rgba(99, 102, 241, 0.22) !important;
+  border-color: rgba(99, 102, 241, 0.6) !important;
+  color: #a5b4fc !important;
+  box-shadow: 0 0 14px -2px rgba(99, 102, 241, 0.4);
 }
 
 .rune-input {
@@ -192,8 +220,13 @@ body {
 [data-theme="light"] .bg-black\/25,
 [data-theme="light"] .bg-black\/30,
 [data-theme="light"] .bg-black\/35,
-[data-theme="light"] .bg-black\/40 {
+[data-theme="light"] .bg-black\/40,
+[data-theme="light"] .bg-black\/45 {
   background-color: #f1f5f9 !important;
+}
+
+[data-theme="light"] .data-row:hover {
+  background-color: rgba(99, 102, 241, 0.05) !important;
 }
 [data-theme="light"] .bg-white\/5,
 [data-theme="light"] .bg-white\/\[0\.02\],

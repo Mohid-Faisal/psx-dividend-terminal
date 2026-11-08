@@ -90,7 +90,7 @@ export default function HomePage() {
     seedData as unknown as PortfolioState
   );
   const [activeTab, setActiveTab] = useState<TabId>("holdings");
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<"dark" | "light">("light");
   const [isSyncingPsx, setIsSyncingPsx] = useState<boolean>(false);
   const [realtimeStatus, setRealtimeStatus] = useState<string>("CONNECTING");
   const [lastSyncMsg, setLastSyncMsg] = useState<string>(
@@ -161,13 +161,13 @@ export default function HomePage() {
   const [newCompFreq, setNewCompFreq] = useState<string>("Quarterly");
   const [isAddingCompany, setIsAddingCompany] = useState<boolean>(false);
 
-  // Theme initialization
+  // Theme initialization: Default to White (Light) Mode
   useEffect(() => {
     const saved = localStorage.getItem("psx_rune_theme") as
       | "dark"
       | "light"
       | null;
-    const initial = saved || "dark";
+    const initial = saved || "light";
     setTheme(initial);
     document.documentElement.setAttribute("data-theme", initial);
   }, []);
@@ -681,40 +681,40 @@ export default function HomePage() {
       )}
 
       {/* Top Glass Header */}
-      <header className="sticky top-0 z-40 backdrop-blur-xl bg-black/45 border-b border-white/10">
+      <header className="sticky top-0 z-40 rune-header">
         <div className="max-w-[1640px] mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
           {/* Brand */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/30 via-indigo-500/20 to-amber-500/30 border border-emerald-400/40 flex items-center justify-center shadow-lg">
-              <Sparkles className="w-5 h-5 text-emerald-400" />
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/25 via-indigo-500/15 to-amber-500/25 border border-emerald-500/30 flex items-center justify-center shadow-sm">
+              <Sparkles className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-lg sm:text-xl font-bold tracking-tight">
+                <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-white">
                   PSX Dividend &amp; Equity Terminal
                 </h1>
-                <span className="text-[10px] font-mono-num uppercase tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/20 border border-indigo-400/40 text-indigo-300 font-semibold">
+                <span className="text-[10px] font-mono-num uppercase tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-700 dark:text-indigo-300 font-bold">
                   Rune Edition
                 </span>
               </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-0.5">
-                <span className="inline-flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                <span className="inline-flex items-center gap-1.5 font-medium">
                   <span
                     className={`w-2 h-2 rounded-full ${
                       realtimeStatus === "SUBSCRIBED"
-                        ? "bg-emerald-400 animate-pulse"
-                        : "bg-amber-400"
+                        ? "bg-emerald-500 dark:bg-emerald-400 animate-pulse"
+                        : "bg-amber-500"
                     }`}
                   />
                   Supabase Realtime:{" "}
-                  <strong className="text-emerald-400">
+                  <strong className="text-emerald-600 dark:text-emerald-400">
                     {realtimeStatus === "SUBSCRIBED"
                       ? "Instant Multi-Device Sync"
                       : "Connected"}
                   </strong>
                 </span>
                 <span>•</span>
-                <span>{lastSyncMsg}</span>
+                <span className="font-medium">{lastSyncMsg}</span>
               </div>
             </div>
           </div>
@@ -723,7 +723,7 @@ export default function HomePage() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => openNewTxModal()}
-              className="rune-pill px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 text-indigo-300 border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 cursor-pointer"
+              className="rune-pill px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 text-indigo-600 dark:text-indigo-300 border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
               Add Buy / Sell
@@ -731,7 +731,7 @@ export default function HomePage() {
 
             <button
               onClick={() => openNewDivModal()}
-              className="rune-pill px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 text-amber-300 border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 cursor-pointer"
+              className="rune-pill px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 text-amber-600 dark:text-amber-300 border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
               Add Dividend
@@ -743,9 +743,9 @@ export default function HomePage() {
                   setActiveTab("dividends");
                   setDivStatusFilter("Unpaid");
                 }}
-                className="rune-pill px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 text-amber-300 border-amber-500/40 bg-amber-500/10 cursor-pointer"
+                className="rune-pill px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 text-amber-600 dark:text-amber-300 border-amber-500/30 bg-amber-500/10 cursor-pointer"
               >
-                <Bell className="w-3.5 h-3.5 text-amber-400" />
+                <Bell className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                 Pending Payouts:{" "}
                 <span className="font-mono-num font-bold">
                   {unpaidDividendsCount}
@@ -756,7 +756,7 @@ export default function HomePage() {
             <button
               onClick={() => syncLivePsx(false)}
               disabled={isSyncingPsx}
-              className="rune-pill px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 text-emerald-300 border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 cursor-pointer disabled:opacity-50"
+              className="rune-pill px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 text-emerald-600 dark:text-emerald-300 border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 cursor-pointer disabled:opacity-50"
             >
               <RefreshCw
                 className={`w-3.5 h-3.5 ${isSyncingPsx ? "animate-spin" : ""}`}
@@ -768,13 +768,13 @@ export default function HomePage() {
 
             <button
               onClick={toggleTheme}
-              className="rune-pill p-2 text-slate-300 hover:text-white cursor-pointer"
+              className="rune-pill p-2 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               title="Toggle Light / Dark Mode"
             >
               {theme === "dark" ? (
                 <Sun className="w-4 h-4 text-amber-400" />
               ) : (
-                <Moon className="w-4 h-4 text-indigo-500" />
+                <Moon className="w-4 h-4 text-indigo-600" />
               )}
             </button>
           </div>
@@ -821,7 +821,9 @@ export default function HomePage() {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as TabId)}
                 className={`rune-pill px-4 py-1.5 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-                  active ? "rune-pill-active" : "text-slate-400"
+                  active
+                    ? "rune-pill-active"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
                 }`}
               >
                 <Icon className="w-3.5 h-3.5" />
