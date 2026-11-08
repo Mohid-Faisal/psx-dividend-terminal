@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState, useMemo } from "react";
 import { PositionSummary } from "@/types/portfolio";
 
 interface MonthlyDivItem {
@@ -59,7 +59,7 @@ export function MonthlyDividendChart({
       : { label: "N/A", net: 0 };
 
   return (
-    <div className="rune-card p-5 flex flex-col justify-between">
+    <div className="rune-card p-5 flex flex-col justify-between h-full">
       <div>
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div>
@@ -299,10 +299,31 @@ export function SectorAllocationCard({
   selectedSector: string;
   onSelectSector: (sec: string) => void;
 }) {
-  const totalStocks = sectors.reduce((acc, s) => acc + s.count, 0);
+  const [metric, setMetric] = useState<"market_value" | "dividends" | "cost">(
+    "market_value"
+  );
+
+  const totalMarketVal = sectors.reduce((sum, s) => sum + s.marketValue, 0);
+  const totalNetDivs = sectors.reduce((sum, s) => sum + s.netDividends, 0);
+  const totalCost = sectors.reduce((sum, s) => sum + s.costBasis, 0);
+
+  const totalCurrentMetric =
+    metric === "dividends"
+      ? totalNetDivs
+      : metric === "cost"
+      ? totalCost
+      : totalMarketVal;
+
+  const sortedSectors = useMemo(() => {
+    return [...sectors].sort((a, b) => {
+      if (metric === "dividends") return b.netDividends - a.netDividends;
+      if (metric === "cost") return b.costBasis - a.costBasis;
+      return b.marketValue - a.marketValue;
+    });
+  }, [sectors, metric]);
 
   return (
-    <div className="rune-card p-5 flex flex-col justify-between">
+    <div className="rune-card p-5 flex flex-col justify-between h-full">
       <div>
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div>
@@ -313,54 +334,77 @@ export function SectorAllocationCard({
               Portfolio Allocation by Sector
             </h3>
           </div>
-          {/* Dropdown Filter for Sectors */}
+          {/* Dropdown Select by Dividend Received / Market Value / Cost Invested */}
           <div className="flex items-center gap-2">
             <select
-              value={selectedSector}
-              onChange={(e) => onSelectSector(e.target.value)}
-              className="rune-input px-3 py-1.5 text-xs font-semibold cursor-pointer max-w-[210px]"
+              value={metric}
+              onChange={(e) =>
+                setMetric(
+                  e.target.value as "market_value" | "dividends" | "cost"
+                )
+              }
+              className="rune-input px-3 py-1.5 text-xs font-semibold cursor-pointer max-w-[195px]"
             >
-              <option value="ALL">All Sectors ({totalStocks} holdings)</option>
-              {sectors.map((s) => (
-                <option key={s.sector} value={s.sector}>
-                  {s.sector} ({s.weightPct.toFixed(1)}% • {s.count})
-                </option>
-              ))}
+              <option value="market_value">By Market Value</option>
+              <option value="dividends">By Dividends Received</option>
+              <option value="cost">By Cost Invested</option>
             </select>
             {selectedSector !== "ALL" && (
               <button
                 onClick={() => onSelectSector("ALL")}
                 className="text-xs px-2.5 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/30 cursor-pointer"
+                title="Clear sector filter"
               >
-                Reset
+                Reset ({selectedSector.split(" ")[0]})
               </button>
             )}
           </div>
         </div>
 
-        {/* Stacked Horizontal Allocation Bar */}
+        {/* Stacked Horizontal Allocation Bar (Dynamically proportioned by selected metric) */}
         <div className="h-4 w-full rounded-full overflow-hidden flex bg-black/40 border border-white/10 mb-4">
-          {sectors.map((s, idx) => (
-            <div
-              key={s.sector}
-              style={{
-                width: `${Math.max(1.5, s.weightPct)}%`,
-                backgroundColor: SECTOR_COLORS[idx % SECTOR_COLORS.length],
-              }}
-              title={`${s.sector}: ${s.weightPct.toFixed(1)}%`}
-              onClick={() =>
-                onSelectSector(selectedSector === s.sector ? "ALL" : s.sector)
-              }
-              className="h-full transition-all duration-300 cursor-pointer hover:opacity-80"
-            />
-          ))}
+          {sortedSectors.map((s, idx) => {
+            const val =
+              metric === "dividends"
+                ? s.netDividends
+                : metric === "cost"
+                ? s.costBasis
+                : s.marketValue;
+            const pct =
+              totalCurrentMetric > 0 ? (val / totalCurrentMetric) * 100 : 0;
+            return (
+              <div
+                key={s.sector}
+                style={{
+                  width: `${Math.max(1.5, pct)}%`,
+                  backgroundColor: SECTOR_COLORS[idx % SECTOR_COLORS.length],
+                }}
+                title={`${s.sector}: Rs. ${val.toLocaleString("en-PK", {
+                  maximumFractionDigits: 0,
+                })} (${pct.toFixed(1)}%)`}
+                onClick={() =>
+                  onSelectSector(selectedSector === s.sector ? "ALL" : s.sector)
+                }
+                className="h-full transition-all duration-300 cursor-pointer hover:opacity-80"
+              />
+            );
+          })}
         </div>
 
         {/* Interactive Legend & Metrics List */}
-        <div className="space-y-2 max-h-[255px] overflow-y-auto pr-1">
-          {sectors.map((s, idx) => {
+        <div className="space-y-2 overflow-y-auto pr-1 flex-1 min-h-[190px] max-h-[225px]">
+          {sortedSectors.map((s, idx) => {
             const color = SECTOR_COLORS[idx % SECTOR_COLORS.length];
             const isSelected = selectedSector === s.sector;
+            const val =
+              metric === "dividends"
+                ? s.netDividends
+                : metric === "cost"
+                ? s.costBasis
+                : s.marketValue;
+            const pct =
+              totalCurrentMetric > 0 ? (val / totalCurrentMetric) * 100 : 0;
+
             return (
               <button
                 key={s.sector}
@@ -382,33 +426,86 @@ export function SectorAllocationCard({
                     <div className="text-xs font-semibold truncate">
                       {s.sector}
                     </div>
-                    <div className="text-[11px] text-slate-400">
-                      {s.count} stock{s.count > 1 ? "s" : ""} • Divs: Rs.{" "}
-                      {s.netDividends.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {s.count} stock{s.count > 1 ? "s" : ""} •{" "}
+                      {metric === "dividends"
+                        ? `Cost: Rs. ${s.costBasis.toLocaleString("en-PK", {
+                            maximumFractionDigits: 0,
+                          })}`
+                        : `Divs: Rs. ${s.netDividends.toLocaleString("en-PK", {
+                            maximumFractionDigits: 0,
+                          })}`}
                     </div>
                   </div>
                 </div>
                 <div className="text-right font-mono-num shrink-0">
-                  <div className="text-xs font-semibold">
-                    Rs. {s.marketValue.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
-                    <span className="text-slate-400">
-                      ({s.weightPct.toFixed(1)}%)
+                  <div className="text-xs font-bold text-slate-900 dark:text-white">
+                    Rs.{" "}
+                    {val.toLocaleString("en-PK", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}{" "}
+                    <span className="text-slate-500 dark:text-slate-400 font-normal">
+                      ({pct.toFixed(1)}%)
                     </span>
                   </div>
                   <div
                     className={`text-[11px] ${
                       s.unrealizedPnl >= 0
-                        ? "text-emerald-400"
-                        : "text-rose-400"
+                        ? "text-emerald-600 dark:text-emerald-400 font-medium"
+                        : "text-rose-600 dark:text-rose-400 font-medium"
                     }`}
                   >
                     {s.unrealizedPnl >= 0 ? "+" : ""}
-                    {s.unrealizedPnl.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} PKR
+                    {s.unrealizedPnl.toLocaleString("en-PK", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}{" "}
+                    PKR
                   </div>
                 </div>
               </button>
             );
           })}
+        </div>
+      </div>
+
+      {/* Bottom Summary Strip Matching Left Chart */}
+      <div className="grid grid-cols-3 gap-2.5 pt-3 mt-3 border-t border-white/10 text-xs">
+        <div className="p-2.5 rounded-xl bg-white/[0.03] border border-white/5">
+          <div className="text-slate-500 dark:text-slate-400 text-[11px]">Active Sectors</div>
+          <div className="font-mono-num font-semibold text-sm mt-0.5 text-slate-900 dark:text-white">
+            {sectors.length} Sectors
+          </div>
+        </div>
+        <div className="p-2.5 rounded-xl bg-indigo-500/[0.06] border border-indigo-500/20">
+          <div className="text-indigo-700 dark:text-indigo-300 text-[11px] truncate">
+            Top: {sortedSectors[0]?.sector.split(" ")[0] || "N/A"}
+          </div>
+          <div className="font-mono-num font-semibold text-indigo-700 dark:text-indigo-400 text-sm mt-0.5 truncate">
+            {(totalCurrentMetric > 0 && sortedSectors[0]
+              ? ((metric === "dividends"
+                  ? sortedSectors[0].netDividends
+                  : metric === "cost"
+                  ? sortedSectors[0].costBasis
+                  : sortedSectors[0].marketValue) /
+                  totalCurrentMetric) *
+                100
+              : 0
+            ).toFixed(1)}% Share
+          </div>
+        </div>
+        <div className="p-2.5 rounded-xl bg-emerald-500/[0.06] border border-emerald-500/20">
+          <div className="text-emerald-700 dark:text-emerald-300 text-[11px] truncate">
+            {metric === "dividends"
+              ? "Total Net Divs"
+              : metric === "cost"
+              ? "Total Invested"
+              : "Total Mkt Value"}
+          </div>
+          <div className="font-mono-num font-semibold text-emerald-700 dark:text-emerald-400 text-sm mt-0.5 truncate">
+            Rs. {totalCurrentMetric.toLocaleString("en-PK", { maximumFractionDigits: 0 })}
+          </div>
         </div>
       </div>
     </div>

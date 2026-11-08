@@ -484,7 +484,7 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     }))
     .sort((a, b) => b.marketValue - a.marketValue);
 
-  // Monthly dividend breakdown for MonthlyDividendChart
+  // Monthly dividend breakdown for MonthlyDividendChart (Last 12 Rolling Months)
   const monthlyDivMap = new Map<
     string,
     {
@@ -502,46 +502,75 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     (d) => d.status === "Paid" && d.paymentDate
   );
 
+  const monthNames = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+
+  // Determine latest year-month from paid dividends or current date
+  let latestYm = "2026-11";
   for (const d of paidDivs) {
-    const monthKey = d.paymentDate.slice(0, 7);
-    const [yr, mo] = monthKey.split("-");
-    const monthNames = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
-    ];
-    const label = `${
-      monthNames[Math.max(0, parseInt(mo, 10) - 1)]
-    } '${yr.slice(2)}`;
-    const cur = monthlyDivMap.get(monthKey) || {
-      monthKey,
+    const ym = d.paymentDate.slice(0, 7);
+    if (ym > latestYm) latestYm = ym;
+  }
+
+  const [endYrStr, endMoStr] = latestYm.split("-");
+  const endYr = parseInt(endYrStr, 10);
+  const endMo = parseInt(endMoStr, 10);
+
+  // Initialize exactly 12 consecutive months ending at latestYm (e.g. Dec '25 to Nov '26)
+  const ltmKeys: string[] = [];
+  for (let i = 11; i >= 0; i--) {
+    let m = endMo - i;
+    let y = endYr;
+    while (m <= 0) {
+      m += 12;
+      y -= 1;
+    }
+    const ymStr = `${y}-${String(m).padStart(2, "0")}`;
+    ltmKeys.push(ymStr);
+  }
+
+  for (const ym of ltmKeys) {
+    const [yr, mo] = ym.split("-");
+    const mIdx = Math.max(0, Math.min(11, parseInt(mo, 10) - 1));
+    const label = `${monthNames[mIdx]} '${yr.slice(2)}`;
+    monthlyDivMap.set(ym, {
+      monthKey: ym,
       label,
       gross: 0,
       net: 0,
       wht: 0,
       zakat: 0,
       count: 0,
-    };
-    cur.gross += d.grossDividend;
-    cur.net += d.netDividend;
-    cur.wht += d.wht;
-    cur.zakat += d.zakat;
+    });
+  }
+
+  // Populate data into the 12-month map
+  for (const d of paidDivs) {
+    const ym = d.paymentDate.slice(0, 7);
+    if (!monthlyDivMap.has(ym)) continue;
+    const cur = monthlyDivMap.get(ym)!;
+    cur.gross = Number((cur.gross + d.grossDividend).toFixed(2));
+    cur.net = Number((cur.net + d.netDividend).toFixed(2));
+    cur.wht = Number((cur.wht + d.wht).toFixed(2));
+    cur.zakat = Number((cur.zakat + d.zakat).toFixed(2));
     cur.count += 1;
-    monthlyDivMap.set(monthKey, cur);
   }
 
   let runningCumNet = 0;
   const monthlyDividends = Array.from(monthlyDivMap.values()).map((m) => {
-    runningCumNet += m.net;
+    runningCumNet = Number((runningCumNet + m.net).toFixed(2));
     return {
       ...m,
       cumulativeNet: runningCumNet,

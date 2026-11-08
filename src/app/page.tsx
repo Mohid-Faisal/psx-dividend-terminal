@@ -89,7 +89,7 @@ export default function HomePage() {
   const [state, setState] = useState<PortfolioState>(
     seedData as unknown as PortfolioState
   );
-  const [activeTab, setActiveTab] = useState<TabId>("holdings");
+  const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [theme, setTheme] = useState<"dark" | "light">("light");
   const [isSyncingPsx, setIsSyncingPsx] = useState<boolean>(false);
   const [realtimeStatus, setRealtimeStatus] = useState<string>("CONNECTING");
@@ -784,6 +784,11 @@ export default function HomePage() {
         <div className="max-w-[1640px] mx-auto px-4 sm:px-6 pb-2.5 flex items-center gap-2 overflow-x-auto">
           {[
             {
+              id: "dashboard",
+              label: "Executive Charts & Analytics",
+              icon: Activity,
+            },
+            {
               id: "holdings",
               label: `Active Holdings (${analytics.activePositions.length})`,
               icon: Layers,
@@ -802,11 +807,6 @@ export default function HomePage() {
               id: "monthly",
               label: `Monthly Summary & Calendar`,
               icon: Calendar,
-            },
-            {
-              id: "dashboard",
-              label: "Executive Charts & Analytics",
-              icon: Activity,
             },
             {
               id: "companies",
@@ -1987,12 +1987,12 @@ export default function HomePage() {
         )}
 
         {/* ========================================================= */}
-        {/* TAB 5: EXECUTIVE CHARTS & ANALYTICS                       */}
+        {/* TAB 1: EXECUTIVE CHARTS & ANALYTICS                       */}
         {/* ========================================================= */}
         {activeTab === "dashboard" && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              <div className="lg:col-span-7">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+              <div className="lg:col-span-7 flex flex-col h-full">
                 <MonthlyDividendChart
                   data={analytics.monthlyDividends}
                   totalGross={summary.totalGrossDividendsPaid}
@@ -2001,7 +2001,7 @@ export default function HomePage() {
                   totalZakat={summary.totalZakatPaid}
                 />
               </div>
-              <div className="lg:col-span-5">
+              <div className="lg:col-span-5 flex flex-col h-full">
                 <SectorAllocationCard
                   sectors={analytics.sectors}
                   selectedSector={selectedSector}
