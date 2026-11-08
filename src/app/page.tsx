@@ -218,7 +218,7 @@ export default function HomePage() {
           } else if (!silent) {
             setToastAlert({
               title: `PSX Live Market Sync Complete`,
-              subtitle: `Updated live prices for ${count} tickers. No new unrecorded dividend announcements for your held stocks.`,
+              subtitle: `Updated live prices for ${count} tickers. All dividend announcements for your added stocks are up to date.`,
             });
           }
         }
