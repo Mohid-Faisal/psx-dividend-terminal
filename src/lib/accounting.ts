@@ -572,9 +572,9 @@ export function computePortfolioAnalytics(state: PortfolioState) {
   const endYr = parseInt(endYrStr, 10);
   const endMo = parseInt(endMoStr, 10);
 
-  // Initialize exactly 12 consecutive months ending at latestYm (e.g. Dec '25 to Nov '26)
+  // Initialize exactly 13 consecutive months ending at latestYm (e.g. Nov '25 to Nov '26)
   const ltmKeys: string[] = [];
-  for (let i = 11; i >= 0; i--) {
+  for (let i = 12; i >= 0; i--) {
     let m = endMo - i;
     let y = endYr;
     while (m <= 0) {
