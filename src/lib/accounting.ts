@@ -388,59 +388,47 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     });
   }
 
-  // Helper to determine if an interim dividend belongs to the subsequent fiscal year
-  // (e.g. HUBC / OGDC 2027 1Q, or DCR 2026-27 1Q when the company's 2025-26 / 2026 final 'YR' dividend is already recorded)
-  function isNextYearInterim(d: DividendRecord, allDivs: DividendRecord[]): boolean {
-    const sym = (d.ticker || "").toUpperCase().trim();
-    const yr = (d.year || "").trim();
-    const term = (d.term || "").trim().toUpperCase();
-
-    if (term === "1Q" || term === "HYR") {
-      if (yr.startsWith("2027") || yr === "2027") return true;
-      if (yr === "2026-27" || yr.includes("-27")) {
-        const hasPriorCompletedYR = allDivs.some((other) => {
-          if ((other.ticker || "").toUpperCase().trim() !== sym) return false;
-          const otherTerm = (other.term || "").toUpperCase().trim();
-          const otherYr = (other.year || "").trim();
-          return (
-            otherTerm === "YR" &&
-            (otherYr.includes("2025-26") || otherYr.includes("2026"))
-          );
-        });
-        if (hasPriorCompletedYR) return true;
-      }
+  function parseEndYear(yrStr: string): number {
+    if (!yrStr) return 0;
+    const dashMatch = yrStr.match(/(\d{4})-(\d{2,4})/);
+    if (dashMatch) {
+      const p1 = parseInt(dashMatch[1]);
+      const p2 = parseInt(dashMatch[2]);
+      return p2 < 100 ? Math.floor(p1 / 100) * 100 + p2 : p2;
     }
-    return false;
+    const match = yrStr.match(/(\d{4})/g);
+    return match ? parseInt(match[match.length - 1]) : 0;
   }
 
-  // Calculate annual DPS per ticker for yearly dividend yield calculation
+  // Calculate Running Fiscal Year DPS per ticker:
+  // For each stock, finds the latest fiscal year among PAID dividends and sums the paid DPS for that year.
+  // As quarters get paid (e.g. 1Q -> HYR -> 3Q -> YR), the running DPS and yield progress dynamically.
   const annualDpsMap = new Map<string, number>();
-  let maxDivTimestamp = 0;
-  for (const div of state.dividends) {
-    const dps = Number(div.dps) || 0;
-    if (dps <= 0) continue;
-    const t = div.paymentDate ? new Date(div.paymentDate).getTime() : 0;
-    if (t > maxDivTimestamp) maxDivTimestamp = t;
-  }
-  const refTime = Math.max(Date.now(), maxDivTimestamp);
-  const oneYearMs = 365.25 * 24 * 60 * 60 * 1000;
 
+  const paidDivsByTicker = new Map<string, DividendRecord[]>();
   for (const div of state.dividends) {
-    const sym = (div.ticker || "").toUpperCase().trim();
-    const dps = Number(div.dps) || 0;
-    if (dps <= 0) continue;
-    // Exclude advance interims announced for the upcoming fiscal year
-    if (isNextYearInterim(div, state.dividends)) {
-      continue;
+    if (div.status === "Paid" && Number(div.dps) > 0) {
+      const sym = (div.ticker || "").toUpperCase().trim();
+      const list = paidDivsByTicker.get(sym) || [];
+      list.push(div);
+      paidDivsByTicker.set(sym, list);
     }
-    if (div.paymentDate) {
-      const divTime = new Date(div.paymentDate).getTime();
-      if (!isNaN(divTime) && refTime - divTime > oneYearMs) {
-        continue;
+  }
+
+  for (const [sym, divs] of paidDivsByTicker.entries()) {
+    let latestFiscalYear = 0;
+    for (const d of divs) {
+      const ey = parseEndYear(d.year);
+      if (ey > latestFiscalYear) latestFiscalYear = ey;
+    }
+
+    let runningDps = 0;
+    for (const d of divs) {
+      if (parseEndYear(d.year) === latestFiscalYear) {
+        runningDps += Number(d.dps) || 0;
       }
     }
-    const cur = annualDpsMap.get(sym) || 0;
-    annualDpsMap.set(sym, cur + dps);
+    annualDpsMap.set(sym, runningDps);
   }
 
   let totalCostBasis = 0;
