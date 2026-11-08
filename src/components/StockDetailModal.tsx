@@ -124,10 +124,10 @@ export default function StockDetailModal({
               Market Value vs Cost
             </div>
             <div className="font-mono-num text-lg font-bold mt-0.5">
-              Rs. {Math.round(position.marketValue).toLocaleString()}
+              Rs. {position.marketValue.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <div className="text-[11px] font-mono-num text-slate-400">
-              Cost: Rs. {Math.round(position.costBasis).toLocaleString()}
+              Cost: Rs. {position.costBasis.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
           </div>
 
@@ -141,7 +141,7 @@ export default function StockDetailModal({
               }`}
             >
               {position.unrealizedPnl >= 0 ? "+" : ""}Rs.{" "}
-              {Math.round(position.unrealizedPnl).toLocaleString()}
+              {position.unrealizedPnl.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <div
               className={`text-[11px] font-mono-num ${
@@ -160,7 +160,7 @@ export default function StockDetailModal({
               Net Dividends Paid
             </div>
             <div className="font-mono-num text-lg font-bold text-amber-300 mt-0.5">
-              Rs. {Math.round(position.netDividendsPaid).toLocaleString()}
+              Rs. {position.netDividendsPaid.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <div className="text-[11px] font-mono-num text-amber-200/80">
               YoC: {position.yieldOnCostPct.toFixed(2)}%

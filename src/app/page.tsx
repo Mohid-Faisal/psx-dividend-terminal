@@ -14,7 +14,6 @@ import {
   PortfolioState,
   Transaction,
 } from "@/types/portfolio";
-import Portfolio3DTowers from "@/components/Portfolio3DTowers";
 import {
   MonthlyDividendChart,
   SectorAllocationCard,
@@ -70,6 +69,14 @@ const MONTH_SHORT = [
   "Nov",
   "Dec",
 ];
+
+function formatPkr(num: number, decimals = 2): string {
+  if (num === undefined || num === null || isNaN(num)) return "0.00";
+  return num.toLocaleString("en-PK", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
 
 function formatYmLabel(ym: string): string {
   if (!ym || !ym.includes("-")) return ym || "Pending";
@@ -193,21 +200,25 @@ export default function HomePage() {
         const data = await res.json();
         if (data.ok) {
           await loadFromSupabase();
-          setLastSyncMsg(
-            `PSX Live Quotes Synced (${data.quotesUpdated} tickers)`
-          );
+          const count =
+            data.quotesUpdated ??
+            data.updatedCount ??
+            data.companies?.length ??
+            27;
+          setLastSyncMsg(`PSX Live Quotes Synced (${count} tickers)`);
           if (data.autoQueuedDividends && data.autoQueuedDividends.length > 0) {
             const first = data.autoQueuedDividends[0];
             setToastAlert({
               title: `New PSX Dividend Queued: ${first.ticker} (${first.term} ${first.year})`,
-              subtitle: `Rs. ${first.dps.toFixed(2)}/sh on ${first.shares} held shares -> Net Rs. ${Math.round(
-                first.shares * first.dps - first.wht
-              ).toLocaleString()} added as Unpaid!`,
+              subtitle: `Rs. ${first.dps.toFixed(2)}/sh on ${first.shares} held shares -> Net Rs. ${formatPkr(
+                first.shares * first.dps - first.wht,
+                2
+              )} added as Unpaid!`,
             });
           } else if (!silent) {
             setToastAlert({
               title: `PSX Live Market Sync Complete`,
-              subtitle: `Updated live prices for ${data.quotesUpdated} tickers. No new unrecorded dividend announcements for your held stocks.`,
+              subtitle: `Updated live prices for ${count} tickers. No new unrecorded dividend announcements for your held stocks.`,
             });
           }
         }
@@ -794,7 +805,7 @@ export default function HomePage() {
             },
             {
               id: "dashboard",
-              label: "Executive Charts & 3D",
+              label: "Executive Charts & Analytics",
               icon: Activity,
             },
             {
@@ -834,7 +845,7 @@ export default function HomePage() {
               </span>
             </div>
             <div className="font-mono-num text-xl font-bold mt-1.5">
-              Rs. {Math.round(summary.totalMarketValue).toLocaleString()}
+              Rs. {formatPkr(summary.totalMarketValue, 2)}
             </div>
             <div
               className={`text-xs font-mono-num mt-1 flex items-center gap-1 ${
@@ -849,7 +860,7 @@ export default function HomePage() {
                 <TrendingDown className="w-3.5 h-3.5" />
               )}
               Day: {summary.totalDayChangeValue >= 0 ? "+" : ""}Rs.{" "}
-              {Math.round(summary.totalDayChangeValue).toLocaleString()} (
+              {formatPkr(summary.totalDayChangeValue, 2)} (
               {summary.totalDayChangePct >= 0 ? "+" : ""}
               {summary.totalDayChangePct.toFixed(2)}%)
             </div>
@@ -864,13 +875,14 @@ export default function HomePage() {
               </span>
             </div>
             <div className="font-mono-num text-xl font-bold mt-1.5">
-              Rs. {Math.round(summary.totalCostBasis).toLocaleString()}
+              Rs. {formatPkr(summary.totalCostBasis, 2)}
             </div>
             <div className="text-xs text-slate-400 mt-1 font-mono-num">
               Fees+SST: Rs.{" "}
-              {Math.round(
-                summary.totalBrokeragePaid + summary.totalSstPaid
-              ).toLocaleString()}{" "}
+              {formatPkr(
+                summary.totalBrokeragePaid + summary.totalSstPaid,
+                2
+              )}{" "}
               included
             </div>
           </div>
@@ -898,12 +910,19 @@ export default function HomePage() {
               }`}
             >
               {summary.totalUnrealizedPnl >= 0 ? "+" : ""}Rs.{" "}
-              {Math.round(summary.totalUnrealizedPnl).toLocaleString()}
+              {formatPkr(summary.totalUnrealizedPnl, 2)}
             </div>
             <div className="text-xs text-slate-400 mt-1 font-mono-num">
               Realized (ALTN):{" "}
-              <span className="text-emerald-400 font-semibold">
-                +Rs. {Math.round(summary.totalRealizedPnl).toLocaleString()}
+              <span
+                className={
+                  summary.totalRealizedPnl >= 0
+                    ? "text-emerald-400 font-semibold"
+                    : "text-rose-400 font-semibold"
+                }
+              >
+                {summary.totalRealizedPnl >= 0 ? "+" : ""}Rs.{" "}
+                {formatPkr(summary.totalRealizedPnl, 2)}
               </span>
             </div>
           </div>
@@ -917,16 +936,17 @@ export default function HomePage() {
               </span>
             </div>
             <div className="font-mono-num text-xl font-bold text-amber-400 mt-1.5">
-              Rs. {Math.round(summary.totalNetDividendsPaid).toLocaleString()}
+              Rs. {formatPkr(summary.totalNetDividendsPaid, 2)}
             </div>
             <div className="text-xs text-slate-300 mt-1 font-mono-num flex items-center justify-between">
               <span>
                 Reinvested (DRIP):{" "}
                 <strong className="text-emerald-400">
                   Rs.{" "}
-                  {Math.round(
-                    summary.totalReinvestedDividendsNet
-                  ).toLocaleString()}
+                  {formatPkr(
+                    summary.totalReinvestedDividendsNet,
+                    2
+                  )}
                 </strong>
               </span>
               {unpaidDividendsCount > 0 && (
@@ -953,7 +973,7 @@ export default function HomePage() {
               }`}
             >
               {summary.totalAllInclusiveReturn >= 0 ? "+" : ""}Rs.{" "}
-              {Math.round(summary.totalAllInclusiveReturn).toLocaleString()}
+              {formatPkr(summary.totalAllInclusiveReturn, 2)}
             </div>
             <div className="text-xs text-slate-400 mt-1 font-mono-num">
               Net Return on Basis:{" "}
@@ -987,11 +1007,11 @@ export default function HomePage() {
               </button>
             </div>
             <div className="font-mono-num text-xl font-bold mt-1.5">
-              Rs. {Math.round(summary.netOutOfPocketCapital).toLocaleString()}
+              Rs. {formatPkr(summary.netOutOfPocketCapital, 2)}
             </div>
             <div className="text-[11px] text-slate-400 mt-1 font-mono-num">
               {includeMcbCash
-                ? `Includes Rs. ${LEGACY_MCB_SALE.netProceeds.toLocaleString()} MCB sale`
+                ? `Includes Rs. ${formatPkr(LEGACY_MCB_SALE.netProceeds, 2)} MCB sale`
                 : "Gross Buy - Sell Cash Flow"}
             </div>
           </div>
@@ -1105,17 +1125,17 @@ export default function HomePage() {
                           {pos.shares.toLocaleString()}
                         </td>
                         <td className="py-3 px-3 text-right font-mono-num text-slate-300">
-                          Rs. {pos.wac.toFixed(2)}
+                          Rs. {formatPkr(pos.wac, 2)}
                         </td>
                         <td className="py-3 px-3 text-right font-mono-num text-slate-300">
-                          Rs. {Math.round(pos.costBasis).toLocaleString()}
+                          Rs. {formatPkr(pos.costBasis, 2)}
                         </td>
                         {/* Strictly Read-Only Live Price Badge */}
                         <td className="py-3 px-3 text-right">
                           <div className="inline-flex flex-col items-end">
                             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 font-mono-num font-bold text-emerald-300">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                              Rs. {pos.livePrice.toFixed(2)}
+                              Rs. {formatPkr(pos.livePrice, 2)}
                             </span>
                             <span
                               className={`text-[10px] font-mono-num mt-0.5 ${
@@ -1125,14 +1145,14 @@ export default function HomePage() {
                               }`}
                             >
                               {pos.dayChange >= 0 ? "+" : ""}
-                              {pos.dayChange.toFixed(2)} (
+                              {formatPkr(pos.dayChange, 2)} (
                               {pos.dayChangePct >= 0 ? "+" : ""}
                               {pos.dayChangePct.toFixed(2)}%)
                             </span>
                           </div>
                         </td>
                         <td className="py-3 px-3 text-right font-mono-num font-semibold">
-                          Rs. {Math.round(pos.marketValue).toLocaleString()}
+                          Rs. {formatPkr(pos.marketValue, 2)}
                         </td>
                         <td className="py-3 px-3 text-right font-mono-num text-slate-300">
                           {pos.weightPct.toFixed(2)}%
@@ -1146,7 +1166,7 @@ export default function HomePage() {
                         >
                           <div>
                             {pos.unrealizedPnl >= 0 ? "+" : ""}Rs.{" "}
-                            {Math.round(pos.unrealizedPnl).toLocaleString()}
+                            {formatPkr(pos.unrealizedPnl, 2)}
                           </div>
                           <div className="text-[10px]">
                             ({pos.unrealizedPnlPct >= 0 ? "+" : ""}
@@ -1155,7 +1175,7 @@ export default function HomePage() {
                         </td>
                         <td className="py-3 px-3 text-right font-mono-num text-amber-400 font-semibold">
                           Rs.{" "}
-                          {Math.round(pos.netDividendsPaid).toLocaleString()}
+                          {formatPkr(pos.netDividendsPaid, 2)}
                         </td>
                         <td
                           className={`py-3 px-3 text-right font-mono-num font-bold ${
@@ -1166,7 +1186,7 @@ export default function HomePage() {
                         >
                           <div>
                             {pos.totalReturn >= 0 ? "+" : ""}Rs.{" "}
-                            {Math.round(pos.totalReturn).toLocaleString()}
+                            {formatPkr(pos.totalReturn, 2)}
                           </div>
                           <div className="text-[10px] font-normal">
                             ({pos.totalReturnPct >= 0 ? "+" : ""}
@@ -1194,24 +1214,26 @@ export default function HomePage() {
                       </td>
                       <td className="py-3.5 px-3 text-right">
                         Rs.{" "}
-                        {Math.round(
+                        {formatPkr(
                           filteredHoldings.reduce(
                             (s, p) => s + p.costBasis,
                             0
-                          )
-                        ).toLocaleString()}
+                          ),
+                          2
+                        )}
                       </td>
                       <td className="py-3.5 px-3 text-right text-slate-400">
                         LIVE PSX
                       </td>
                       <td className="py-3.5 px-3 text-right">
                         Rs.{" "}
-                        {Math.round(
+                        {formatPkr(
                           filteredHoldings.reduce(
                             (s, p) => s + p.marketValue,
                             0
-                          )
-                        ).toLocaleString()}
+                          ),
+                          2
+                        )}
                       </td>
                       <td className="py-3.5 px-3 text-right">100.0%</td>
                       <td
@@ -1222,21 +1244,23 @@ export default function HomePage() {
                         }`}
                       >
                         {summary.totalUnrealizedPnl >= 0 ? "+" : ""}Rs.{" "}
-                        {Math.round(
+                        {formatPkr(
                           filteredHoldings.reduce(
                             (s, p) => s + p.unrealizedPnl,
                             0
-                          )
-                        ).toLocaleString()}
+                          ),
+                          2
+                        )}
                       </td>
                       <td className="py-3.5 px-3 text-right text-amber-400">
                         Rs.{" "}
-                        {Math.round(
+                        {formatPkr(
                           filteredHoldings.reduce(
                             (s, p) => s + p.netDividendsPaid,
                             0
-                          )
-                        ).toLocaleString()}
+                          ),
+                          2
+                        )}
                       </td>
                       <td
                         className={`py-3.5 px-3 text-right ${
@@ -1246,12 +1270,13 @@ export default function HomePage() {
                         }`}
                       >
                         {summary.totalAllInclusiveReturn >= 0 ? "+" : ""}Rs.{" "}
-                        {Math.round(
+                        {formatPkr(
                           filteredHoldings.reduce(
                             (s, p) => s + p.totalReturn,
                             0
-                          )
-                        ).toLocaleString()}
+                          ),
+                          2
+                        )}
                       </td>
                       <td className="py-3.5 px-3 text-right text-amber-300">
                         {summary.portfolioYieldOnCostPct.toFixed(2)}%
@@ -1960,7 +1985,7 @@ export default function HomePage() {
         )}
 
         {/* ========================================================= */}
-        {/* TAB 5: EXECUTIVE CHARTS & 3D                              */}
+        {/* TAB 5: EXECUTIVE CHARTS & ANALYTICS                       */}
         {/* ========================================================= */}
         {activeTab === "dashboard" && (
           <div className="space-y-6">
@@ -1987,11 +2012,6 @@ export default function HomePage() {
             </div>
 
             <StockLeaderboardChart
-              positions={analytics.activePositions}
-              onSelectTicker={(ticker: string) => setModalTicker(ticker)}
-            />
-
-            <Portfolio3DTowers
               positions={analytics.activePositions}
               onSelectTicker={(ticker: string) => setModalTicker(ticker)}
             />

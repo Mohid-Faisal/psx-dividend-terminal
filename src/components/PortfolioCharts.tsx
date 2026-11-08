@@ -83,38 +83,67 @@ export function MonthlyDividendChart({
             <span className="inline-flex items-center gap-1.5">
               <span className="w-3 h-0.5 bg-amber-400 inline-block" />
               <span className="w-2 h-2 rounded-full bg-amber-400 inline-block -ml-2" />
-              Cumulative Net Curve
+              Net Realized Cash Curve (Right Scale)
             </span>
           </div>
         </div>
 
-        {/* SVG Combo Bar + Cumulative Line Chart */}
+        {/* SVG Combo Bar + Cumulative Line Chart with Dual Scales (Left: Monthly, Right: Cumulative Net Cash) */}
         <div className="w-full overflow-x-auto pt-2 pb-1">
           <svg
-            viewBox="0 0 680 220"
-            className="w-full h-[215px] min-w-[500px]"
+            viewBox="0 0 710 220"
+            className="w-full h-[215px] min-w-[540px]"
           >
-            {/* Horizontal grid lines */}
+            {/* Axis Titles */}
+            <text
+              x={44}
+              y={12}
+              textAnchor="end"
+              className="fill-slate-400 text-[9px] font-semibold uppercase tracking-wider"
+            >
+              Monthly (PKR)
+            </text>
+            <text
+              x={656}
+              y={12}
+              textAnchor="start"
+              className="fill-amber-400 text-[9px] font-semibold uppercase tracking-wider"
+            >
+              Net Cash (PKR)
+            </text>
+
+            {/* Horizontal grid lines & Dual Ticks */}
             {[0, 0.25, 0.5, 0.75, 1].map((t, i) => {
               const y = 24 + (1 - t) * 150;
-              const val = Math.round(t * maxGross);
+              const leftVal = Math.round(t * maxGross);
+              const rightVal = Math.round(t * maxCum);
               return (
                 <g key={i}>
                   <line
                     x1={48}
                     y1={y}
-                    x2={630}
+                    x2={650}
                     y2={y}
                     stroke="rgba(148,163,184,0.14)"
                     strokeDasharray="3 3"
                   />
+                  {/* Left Scale: Monthly Bar Values */}
                   <text
-                    x={42}
-                    y={y + 4}
+                    x={44}
+                    y={y + 3.5}
                     textAnchor="end"
                     className="fill-slate-400 text-[10px] font-mono-num"
                   >
-                    {val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val}
+                    {leftVal >= 1000 ? `${(leftVal / 1000).toFixed(1)}k` : leftVal}
+                  </text>
+                  {/* Right Scale: Cumulative Net Realized Cash Dividends */}
+                  <text
+                    x={656}
+                    y={y + 3.5}
+                    textAnchor="start"
+                    className="fill-amber-400 text-[10px] font-mono-num font-medium"
+                  >
+                    {rightVal >= 1000 ? `${(rightVal / 1000).toFixed(1)}k` : rightVal}
                   </text>
                 </g>
               );
@@ -122,8 +151,8 @@ export function MonthlyDividendChart({
 
             {/* Stacked Bars */}
             {data.map((d, idx) => {
-              const slotW = 570 / Math.max(data.length, 1);
-              const barW = Math.min(38, slotW * 0.56);
+              const slotW = 590 / Math.max(data.length, 1);
+              const barW = Math.min(36, slotW * 0.54);
               const x = 54 + idx * slotW + (slotW - barW) / 2;
               const netH = (d.net / maxGross) * 150;
               const taxH = ((d.wht + d.zakat) / maxGross) * 150;
@@ -183,7 +212,7 @@ export function MonthlyDividendChart({
               );
             })}
 
-            {/* Cumulative Net Line */}
+            {/* Cumulative Net Line connected to Right Scale */}
             {data.length > 1 && (
               <>
                 <polyline
@@ -192,17 +221,17 @@ export function MonthlyDividendChart({
                   strokeWidth={2.5}
                   points={data
                     .map((d, idx) => {
-                      const slotW = 570 / Math.max(data.length, 1);
+                      const slotW = 590 / Math.max(data.length, 1);
                       const cx = 54 + idx * slotW + slotW / 2;
-                      const cy = 174 - (d.cumulativeNet / maxCum) * 145;
+                      const cy = 174 - (d.cumulativeNet / maxCum) * 150;
                       return `${cx},${cy}`;
                     })
                     .join(" ")}
                 />
                 {data.map((d, idx) => {
-                  const slotW = 570 / Math.max(data.length, 1);
+                  const slotW = 590 / Math.max(data.length, 1);
                   const cx = 54 + idx * slotW + slotW / 2;
-                  const cy = 174 - (d.cumulativeNet / maxCum) * 145;
+                  const cy = 174 - (d.cumulativeNet / maxCum) * 150;
                   return (
                     <circle
                       key={d.monthKey}
@@ -221,12 +250,12 @@ export function MonthlyDividendChart({
         </div>
       </div>
 
-      {/* Bottom Summary Strip filling card space cleanly */}
+      {/* Bottom Summary Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-3 mt-2 border-t border-white/10 text-xs">
         <div className="p-2.5 rounded-xl bg-white/[0.03] border border-white/5">
           <div className="text-slate-400 text-[11px]">Gross Declared</div>
           <div className="font-mono-num font-semibold text-sm mt-0.5">
-            Rs. {Math.round(totalGross).toLocaleString()}
+            Rs. {totalGross.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
         <div className="p-2.5 rounded-xl bg-emerald-500/[0.06] border border-emerald-500/20">
@@ -234,7 +263,7 @@ export function MonthlyDividendChart({
             Net Realized Cash
           </div>
           <div className="font-mono-num font-semibold text-emerald-400 text-sm mt-0.5">
-            Rs. {totalNet.toLocaleString("en-PK", { maximumFractionDigits: 0 })}
+            Rs. {totalNet.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
         <div className="p-2.5 rounded-xl bg-rose-500/[0.06] border border-rose-500/20">
@@ -242,7 +271,7 @@ export function MonthlyDividendChart({
             WHT + Zakat Deducted
           </div>
           <div className="font-mono-num font-semibold text-rose-400 text-sm mt-0.5">
-            Rs. {Math.round(totalWht + totalZakat).toLocaleString()}
+            Rs. {(totalWht + totalZakat).toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
         <div className="p-2.5 rounded-xl bg-amber-500/[0.06] border border-amber-500/20">
@@ -250,9 +279,9 @@ export function MonthlyDividendChart({
             Peak Month ({bestMonth.label})
           </div>
           <div className="font-mono-num font-semibold text-amber-300 text-sm mt-0.5">
-            Rs. {Math.round(bestMonth.net).toLocaleString()}{" "}
+            Rs. {bestMonth.net.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
             <span className="text-[10px] text-slate-400">
-              (Avg {Math.round(avgMonthlyNet).toLocaleString()})
+              (Avg {avgMonthlyNet.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
             </span>
           </div>
         </div>
@@ -270,6 +299,8 @@ export function SectorAllocationCard({
   selectedSector: string;
   onSelectSector: (sec: string) => void;
 }) {
+  const totalStocks = sectors.reduce((acc, s) => acc + s.count, 0);
+
   return (
     <div className="rune-card p-5 flex flex-col justify-between">
       <div>
@@ -279,17 +310,32 @@ export function SectorAllocationCard({
               PSX Sector Concentration
             </span>
             <h3 className="text-base font-semibold mt-0.5">
-              Portfolio Allocation by Sector (Click to Filter)
+              Portfolio Allocation by Sector
             </h3>
           </div>
-          {selectedSector !== "ALL" && (
-            <button
-              onClick={() => onSelectSector("ALL")}
-              className="text-xs px-2.5 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/30 cursor-pointer"
+          {/* Dropdown Filter for Sectors */}
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedSector}
+              onChange={(e) => onSelectSector(e.target.value)}
+              className="rune-input px-3 py-1.5 text-xs font-semibold cursor-pointer max-w-[210px]"
             >
-              Reset Filter ({selectedSector})
-            </button>
-          )}
+              <option value="ALL">All Sectors ({totalStocks} holdings)</option>
+              {sectors.map((s) => (
+                <option key={s.sector} value={s.sector}>
+                  {s.sector} ({s.weightPct.toFixed(1)}% • {s.count})
+                </option>
+              ))}
+            </select>
+            {selectedSector !== "ALL" && (
+              <button
+                onClick={() => onSelectSector("ALL")}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/30 cursor-pointer"
+              >
+                Reset
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Stacked Horizontal Allocation Bar */}
@@ -310,7 +356,7 @@ export function SectorAllocationCard({
           ))}
         </div>
 
-        {/* Explicit Interactive Legend & Metrics List */}
+        {/* Interactive Legend & Metrics List */}
         <div className="space-y-2 max-h-[255px] overflow-y-auto pr-1">
           {sectors.map((s, idx) => {
             const color = SECTOR_COLORS[idx % SECTOR_COLORS.length];
@@ -338,13 +384,13 @@ export function SectorAllocationCard({
                     </div>
                     <div className="text-[11px] text-slate-400">
                       {s.count} stock{s.count > 1 ? "s" : ""} • Divs: Rs.{" "}
-                      {Math.round(s.netDividends).toLocaleString()}
+                      {s.netDividends.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
                 </div>
                 <div className="text-right font-mono-num shrink-0">
                   <div className="text-xs font-semibold">
-                    Rs. {Math.round(s.marketValue).toLocaleString()}{" "}
+                    Rs. {s.marketValue.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
                     <span className="text-slate-400">
                       ({s.weightPct.toFixed(1)}%)
                     </span>
@@ -357,7 +403,7 @@ export function SectorAllocationCard({
                     }`}
                   >
                     {s.unrealizedPnl >= 0 ? "+" : ""}
-                    {Math.round(s.unrealizedPnl).toLocaleString()} PKR
+                    {s.unrealizedPnl.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} PKR
                   </div>
                 </div>
               </button>

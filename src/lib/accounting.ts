@@ -224,12 +224,12 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     totalSstPaid += sst;
 
     if (tx.action === "Buy") {
-      const lotCost = gross + fees;
+      const lotCost = Number((gross + fees).toFixed(2));
       netCashFlow = -lotCost;
       pos.shares += shares;
       pos.totalSharesBought += shares;
-      pos.costBasis += lotCost;
-      pos.wac = pos.shares > 0 ? pos.costBasis / pos.shares : 0;
+      pos.costBasis = Number((pos.costBasis + lotCost).toFixed(2));
+      pos.wac = pos.shares > 0 ? Number((pos.costBasis / pos.shares).toFixed(4)) : 0;
       totalBuyCashOutflow += lotCost;
       if (mObj) mObj.buyOutflow += lotCost;
 
@@ -246,7 +246,7 @@ export function computePortfolioAnalytics(state: PortfolioState) {
         realizedPnl: 0,
       });
     } else {
-      const netProceeds = gross - fees;
+      const netProceeds = Number((gross - fees).toFixed(2));
       netCashFlow = netProceeds;
       pos.totalSharesSold += shares;
       totalSellCashInflowAll += netProceeds;
@@ -261,12 +261,12 @@ export function computePortfolioAnalytics(state: PortfolioState) {
         totalSellCashInflowExLegacy += netProceeds;
         if (mObj) mObj.sellInflowExLegacy += netProceeds;
         const currentWac = pos.shares > 0 ? pos.costBasis / pos.shares : 0;
-        const costRemoved = shares * currentWac;
-        const lotRealizedPnl = netProceeds - costRemoved;
-        pos.realizedPnl += lotRealizedPnl;
+        const costRemoved = Number((shares * currentWac).toFixed(2));
+        const lotRealizedPnl = Number((netProceeds - costRemoved).toFixed(2));
+        pos.realizedPnl = Number((pos.realizedPnl + lotRealizedPnl).toFixed(2));
         pos.shares = Math.max(0, pos.shares - shares);
-        pos.costBasis = Math.max(0, pos.costBasis - costRemoved);
-        pos.wac = pos.shares > 0 ? pos.costBasis / pos.shares : 0;
+        pos.costBasis = Math.max(0, Number((pos.costBasis - costRemoved).toFixed(2)));
+        pos.wac = pos.shares > 0 ? Number((pos.costBasis / pos.shares).toFixed(4)) : 0;
       }
 
       pos.lots.push({
@@ -398,12 +398,15 @@ export function computePortfolioAnalytics(state: PortfolioState) {
   const positions: PositionSummary[] = [];
 
   for (const pos of posMap.values()) {
-    pos.marketValue = pos.shares * pos.livePrice;
-    pos.unrealizedPnl = pos.shares > 0 ? pos.marketValue - pos.costBasis : 0;
+    pos.costBasis = Number(pos.costBasis.toFixed(2));
+    pos.marketValue = Number((pos.shares * pos.livePrice).toFixed(2));
+    pos.wac = pos.shares > 0 ? Number((pos.costBasis / pos.shares).toFixed(2)) : 0;
+    pos.unrealizedPnl = pos.shares > 0 ? Number((pos.marketValue - pos.costBasis).toFixed(2)) : 0;
     pos.unrealizedPnlPct =
       pos.costBasis > 0 ? (pos.unrealizedPnl / pos.costBasis) * 100 : 0;
-    pos.totalReturn =
-      pos.unrealizedPnl + pos.realizedPnl + pos.netDividendsPaid;
+    pos.totalReturn = Number(
+      (pos.unrealizedPnl + pos.realizedPnl + pos.netDividendsPaid).toFixed(2)
+    );
     pos.totalReturnPct =
       pos.costBasis > 0 ? (pos.totalReturn / pos.costBasis) * 100 : 0;
     pos.yieldOnCostPct =
@@ -420,6 +423,12 @@ export function computePortfolioAnalytics(state: PortfolioState) {
 
     positions.push(pos);
   }
+
+  totalCostBasis = Number(totalCostBasis.toFixed(2));
+  totalMarketValue = Number(totalMarketValue.toFixed(2));
+  totalUnrealizedPnl = Number(totalUnrealizedPnl.toFixed(2));
+  totalRealizedPnl = Number(totalRealizedPnl.toFixed(2));
+  totalDayChangeValue = Number(totalDayChangeValue.toFixed(2));
 
   for (const pos of positions) {
     pos.weightPct =
