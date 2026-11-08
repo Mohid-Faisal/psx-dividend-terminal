@@ -388,7 +388,32 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     });
   }
 
-  // Calculate trailing 12-month / annual DPS per ticker for yearly dividend yield calculation
+  // Helper to determine if an interim dividend belongs to the subsequent fiscal year
+  // (e.g. HUBC / OGDC 2027 1Q, or DCR 2026-27 1Q when the company's 2025-26 / 2026 final 'YR' dividend is already recorded)
+  function isNextYearInterim(d: DividendRecord, allDivs: DividendRecord[]): boolean {
+    const sym = (d.ticker || "").toUpperCase().trim();
+    const yr = (d.year || "").trim();
+    const term = (d.term || "").trim().toUpperCase();
+
+    if (term === "1Q" || term === "HYR") {
+      if (yr.startsWith("2027") || yr === "2027") return true;
+      if (yr === "2026-27" || yr.includes("-27")) {
+        const hasPriorCompletedYR = allDivs.some((other) => {
+          if ((other.ticker || "").toUpperCase().trim() !== sym) return false;
+          const otherTerm = (other.term || "").toUpperCase().trim();
+          const otherYr = (other.year || "").trim();
+          return (
+            otherTerm === "YR" &&
+            (otherYr.includes("2025-26") || otherYr.includes("2026"))
+          );
+        });
+        if (hasPriorCompletedYR) return true;
+      }
+    }
+    return false;
+  }
+
+  // Calculate annual DPS per ticker for yearly dividend yield calculation
   const annualDpsMap = new Map<string, number>();
   let maxDivTimestamp = 0;
   for (const div of state.dividends) {
@@ -404,6 +429,10 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     const sym = (div.ticker || "").toUpperCase().trim();
     const dps = Number(div.dps) || 0;
     if (dps <= 0) continue;
+    // Exclude advance interims announced for the upcoming fiscal year
+    if (isNextYearInterim(div, state.dividends)) {
+      continue;
+    }
     if (div.paymentDate) {
       const divTime = new Date(div.paymentDate).getTime();
       if (!isNaN(divTime) && refTime - divTime > oneYearMs) {
