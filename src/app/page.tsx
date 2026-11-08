@@ -836,8 +836,9 @@ export default function HomePage() {
 
       {/* Main Content Container (Full Screen Width max-w-[1640px]) */}
       <main className="max-w-[1640px] mx-auto px-4 sm:px-6 pt-5 space-y-6">
-        {/* 6 Executive KPI Cards */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
+        {/* 6 Executive KPI Cards (Shown ONLY on Executive Charts & Analytics tab) */}
+        {activeTab === "dashboard" && (
+          <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
           {/* 1. Live Market Value */}
           <div className="rune-card p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
@@ -1018,6 +1019,7 @@ export default function HomePage() {
             </div>
           </div>
         </section>
+      )}
 
         {/* ========================================================= */}
         {/* TAB 1: ACTIVE HOLDINGS (FULL WIDTH TABLE)                 */}
@@ -1093,13 +1095,14 @@ export default function HomePage() {
                       <th className="py-3 px-3 text-right">WAC Basis</th>
                       <th className="py-3 px-3 text-right">Total Cost</th>
                       <th className="py-3 px-3 text-right">
-                        Live PSX Price (Read-Only)
+                        Live PSX Price
                       </th>
                       <th className="py-3 px-3 text-right">Market Value</th>
                       <th className="py-3 px-3 text-right">Weight %</th>
                       <th className="py-3 px-3 text-right">Unrealized P&amp;L</th>
                       <th className="py-3 px-3 text-right">Net Dividends</th>
                       <th className="py-3 px-3 text-right">Total Return</th>
+                      <th className="py-3 px-3 text-right">Div Yield %</th>
                       <th className="py-3 px-3 text-right">YoC %</th>
                     </tr>
                   </thead>
@@ -1195,6 +1198,9 @@ export default function HomePage() {
                             {pos.totalReturnPct.toFixed(2)}%)
                           </div>
                         </td>
+                        <td className="py-3 px-3 text-right font-mono-num text-cyan-400 font-semibold">
+                          {pos.currentYieldPct.toFixed(2)}%
+                        </td>
                         <td className="py-3 px-3 text-right font-mono-num text-amber-300 font-semibold">
                           {pos.yieldOnCostPct.toFixed(2)}%
                         </td>
@@ -1279,6 +1285,9 @@ export default function HomePage() {
                           ),
                           2
                         )}
+                      </td>
+                      <td className="py-3.5 px-3 text-right text-cyan-400 font-semibold">
+                        {summary.portfolioCurrentYieldPct.toFixed(2)}%
                       </td>
                       <td className="py-3.5 px-3 text-right text-amber-300">
                         {summary.portfolioYieldOnCostPct.toFixed(2)}%
@@ -1385,7 +1394,6 @@ export default function HomePage() {
                 <thead>
                   <tr className="border-b border-white/10 text-[11px] uppercase tracking-wider text-slate-400">
                     <th className="py-3 px-3">Date</th>
-                    <th className="py-3 px-3">Month</th>
                     <th className="py-3 px-3">Ticker / Company</th>
                     <th className="py-3 px-3">Action</th>
                     <th className="py-3 px-3 text-right">Shares</th>
@@ -1403,9 +1411,6 @@ export default function HomePage() {
                     <tr key={t.id} className="data-row">
                       <td className="py-2.5 px-3 font-mono-num text-slate-300 whitespace-nowrap">
                         {t.date}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
-                        {formatYmLabel(t.ym)}
                       </td>
                       <td className="py-2.5 px-3">
                         <span className="font-mono-num font-bold text-indigo-400">
@@ -1474,7 +1479,7 @@ export default function HomePage() {
                 </tbody>
                 <tfoot>
                   <tr className="border-t-2 border-white/15 text-xs font-mono-num font-bold bg-white/[0.02]">
-                    <td colSpan={4} className="py-3.5 px-3">
+                    <td colSpan={3} className="py-3.5 px-3">
                       TOTAL ({filteredTransactions.length} TRANSACTIONS)
                     </td>
                     <td className="py-3.5 px-3 text-right">
