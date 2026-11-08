@@ -388,6 +388,32 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     });
   }
 
+  // Calculate trailing 12-month / annual DPS per ticker for yearly dividend yield calculation
+  const annualDpsMap = new Map<string, number>();
+  let maxDivTimestamp = 0;
+  for (const div of state.dividends) {
+    const dps = Number(div.dps) || 0;
+    if (dps <= 0) continue;
+    const t = div.paymentDate ? new Date(div.paymentDate).getTime() : 0;
+    if (t > maxDivTimestamp) maxDivTimestamp = t;
+  }
+  const refTime = Math.max(Date.now(), maxDivTimestamp);
+  const oneYearMs = 365.25 * 24 * 60 * 60 * 1000;
+
+  for (const div of state.dividends) {
+    const sym = (div.ticker || "").toUpperCase().trim();
+    const dps = Number(div.dps) || 0;
+    if (dps <= 0) continue;
+    if (div.paymentDate) {
+      const divTime = new Date(div.paymentDate).getTime();
+      if (!isNaN(divTime) && refTime - divTime > oneYearMs) {
+        continue;
+      }
+    }
+    const cur = annualDpsMap.get(sym) || 0;
+    annualDpsMap.set(sym, cur + dps);
+  }
+
   let totalCostBasis = 0;
   let totalMarketValue = 0;
   let totalUnrealizedPnl = 0;
@@ -411,8 +437,9 @@ export function computePortfolioAnalytics(state: PortfolioState) {
       pos.costBasis > 0 ? (pos.totalReturn / pos.costBasis) * 100 : 0;
     pos.yieldOnCostPct =
       pos.costBasis > 0 ? (pos.netDividendsPaid / pos.costBasis) * 100 : 0;
+    const annualDps = annualDpsMap.get(pos.ticker) || 0;
     pos.currentYieldPct =
-      pos.marketValue > 0 ? (pos.netDividendsPaid / pos.marketValue) * 100 : 0;
+      pos.livePrice > 0 ? (annualDps / pos.livePrice) * 100 : 0;
 
     totalCostBasis += pos.costBasis;
     totalMarketValue += pos.marketValue;
@@ -588,6 +615,14 @@ export function computePortfolioAnalytics(state: PortfolioState) {
   const totalAllInclusiveReturnPct =
     totalCostBasis > 0 ? (totalAllInclusiveReturn / totalCostBasis) * 100 : 0;
 
+  let totalProjectedAnnualDividends = 0;
+  for (const pos of positions) {
+    if (pos.shares > 0) {
+      const annualDps = annualDpsMap.get(pos.ticker) || 0;
+      totalProjectedAnnualDividends += pos.shares * annualDps;
+    }
+  }
+
   return {
     positions,
     activePositions,
@@ -625,7 +660,7 @@ export function computePortfolioAnalytics(state: PortfolioState) {
           : 0,
       portfolioCurrentYieldPct:
         totalMarketValue > 0
-          ? (totalNetDividendsPaid / totalMarketValue) * 100
+          ? (totalProjectedAnnualDividends / totalMarketValue) * 100
           : 0,
       totalBuyCashOutflow,
       totalSellCashInflow: effectiveSellInflow,
