@@ -130,8 +130,6 @@ body {
   border: 1px solid var(--border-chrome-side);
   border-top-color: var(--border-chrome-top);
   border-radius: 10px;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }

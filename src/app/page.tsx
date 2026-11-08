@@ -1041,13 +1041,13 @@ export default function HomePage() {
                 {/* Search, Sector Filter & Action Buttons */}
                 <div className="flex flex-wrap items-center gap-2.5">
                   <div className="relative">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
                       value={holdingSearch}
                       onChange={(e) => setHoldingSearch(e.target.value)}
                       placeholder="Search ticker, name, sector..."
-                      className="rune-input pl-9 pr-3 py-1.5 text-xs w-56"
+                      className="rune-input pl-10 pr-3 py-1.5 text-xs w-60"
                     />
                   </div>
 
@@ -1336,13 +1336,13 @@ export default function HomePage() {
 
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="text"
                     value={txSearch}
                     onChange={(e) => setTxSearch(e.target.value)}
                     placeholder="Search ticker, notes, month..."
-                    className="rune-input pl-8 pr-3 py-1.5 text-xs w-52"
+                    className="rune-input pl-9 pr-3 py-1.5 text-xs w-52"
                   />
                 </div>
                 <select
@@ -1587,13 +1587,13 @@ export default function HomePage() {
 
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="relative">
-                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
                       value={divSearch}
                       onChange={(e) => setDivSearch(e.target.value)}
                       placeholder="Search ticker, term, month..."
-                      className="rune-input pl-8 pr-3 py-1.5 text-xs w-48"
+                      className="rune-input pl-9 pr-3 py-1.5 text-xs w-52"
                     />
                   </div>
                   <select
