@@ -1208,91 +1208,78 @@ export default function HomePage() {
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr className="border-t-2 border-white/15 text-xs font-mono-num font-bold bg-white/[0.02]">
-                      <td className="py-3.5 px-3">
-                        TOTAL ({filteredHoldings.length} ACTIVE HOLDINGS)
-                      </td>
-                      <td className="py-3.5 px-3 text-right">
-                        {filteredHoldings
-                          .reduce((s, p) => s + p.shares, 0)
-                          .toLocaleString()}
-                      </td>
-                      <td className="py-3.5 px-3 text-right text-slate-400">
-                        —
-                      </td>
-                      <td className="py-3.5 px-3 text-right">
-                        Rs.{" "}
-                        {formatPkr(
-                          filteredHoldings.reduce(
-                            (s, p) => s + p.costBasis,
-                            0
-                          ),
-                          2
-                        )}
-                      </td>
-                      <td className="py-3.5 px-3 text-right text-slate-400">
-                        LIVE PSX
-                      </td>
-                      <td className="py-3.5 px-3 text-right">
-                        Rs.{" "}
-                        {formatPkr(
-                          filteredHoldings.reduce(
-                            (s, p) => s + p.marketValue,
-                            0
-                          ),
-                          2
-                        )}
-                      </td>
-                      <td className="py-3.5 px-3 text-right">100.0%</td>
-                      <td
-                        className={`py-3.5 px-3 text-right ${
-                          summary.totalUnrealizedPnl >= 0
-                            ? "text-emerald-400"
-                            : "text-rose-400"
-                        }`}
-                      >
-                        {summary.totalUnrealizedPnl >= 0 ? "+" : ""}Rs.{" "}
-                        {formatPkr(
-                          filteredHoldings.reduce(
-                            (s, p) => s + p.unrealizedPnl,
-                            0
-                          ),
-                          2
-                        )}
-                      </td>
-                      <td className="py-3.5 px-3 text-right text-amber-400">
-                        Rs.{" "}
-                        {formatPkr(
-                          filteredHoldings.reduce(
-                            (s, p) => s + p.netDividendsPaid,
-                            0
-                          ),
-                          2
-                        )}
-                      </td>
-                      <td
-                        className={`py-3.5 px-3 text-right ${
-                          summary.totalAllInclusiveReturn >= 0
-                            ? "text-emerald-400"
-                            : "text-rose-400"
-                        }`}
-                      >
-                        {summary.totalAllInclusiveReturn >= 0 ? "+" : ""}Rs.{" "}
-                        {formatPkr(
-                          filteredHoldings.reduce(
-                            (s, p) => s + p.totalReturn,
-                            0
-                          ),
-                          2
-                        )}
-                      </td>
-                      <td className="py-3.5 px-3 text-right text-cyan-400 font-semibold">
-                        {summary.portfolioCurrentYieldPct.toFixed(2)}%
-                      </td>
-                      <td className="py-3.5 px-3 text-right text-amber-300">
-                        {summary.portfolioYieldOnCostPct.toFixed(2)}%
-                      </td>
-                    </tr>
+                    {(() => {
+                      const fShares = filteredHoldings.reduce((s, p) => s + p.shares, 0);
+                      const fCost = filteredHoldings.reduce((s, p) => s + p.costBasis, 0);
+                      const fMv = filteredHoldings.reduce((s, p) => s + p.marketValue, 0);
+                      const fUnrealized = filteredHoldings.reduce((s, p) => s + p.unrealizedPnl, 0);
+                      const fNetDiv = filteredHoldings.reduce((s, p) => s + p.netDividendsPaid, 0);
+                      const fTotalReturn = filteredHoldings.reduce((s, p) => s + p.totalReturn, 0);
+
+                      const fDivYieldPct =
+                        fMv > 0
+                          ? (filteredHoldings.reduce(
+                              (s, p) => s + p.marketValue * (p.currentYieldPct / 100),
+                              0
+                            ) / fMv) * 100
+                          : 0;
+
+                      const fYieldOnCostPct =
+                        fCost > 0 ? (fNetDiv / fCost) * 100 : 0;
+
+                      return (
+                        <tr className="border-t-2 border-white/15 text-xs font-mono-num font-bold bg-white/[0.02]">
+                          <td className="py-3.5 px-3">
+                            TOTAL ({filteredHoldings.length} ACTIVE HOLDINGS)
+                          </td>
+                          <td className="py-3.5 px-3 text-right">
+                            {fShares.toLocaleString()}
+                          </td>
+                          <td className="py-3.5 px-3 text-right text-slate-400">
+                            —
+                          </td>
+                          <td className="py-3.5 px-3 text-right">
+                            Rs. {formatPkr(fCost, 2)}
+                          </td>
+                          <td className="py-3.5 px-3 text-right text-slate-400">
+                            LIVE PSX
+                          </td>
+                          <td className="py-3.5 px-3 text-right">
+                            Rs. {formatPkr(fMv, 2)}
+                          </td>
+                          <td className="py-3.5 px-3 text-right">100.0%</td>
+                          <td
+                            className={`py-3.5 px-3 text-right ${
+                              fUnrealized >= 0
+                                ? "text-emerald-400"
+                                : "text-rose-400"
+                            }`}
+                          >
+                            {fUnrealized >= 0 ? "+" : ""}Rs.{" "}
+                            {formatPkr(fUnrealized, 2)}
+                          </td>
+                          <td className="py-3.5 px-3 text-right text-amber-400">
+                            Rs. {formatPkr(fNetDiv, 2)}
+                          </td>
+                          <td
+                            className={`py-3.5 px-3 text-right ${
+                              fTotalReturn >= 0
+                                ? "text-emerald-400"
+                                : "text-rose-400"
+                            }`}
+                          >
+                            {fTotalReturn >= 0 ? "+" : ""}Rs.{" "}
+                            {formatPkr(fTotalReturn, 2)}
+                          </td>
+                          <td className="py-3.5 px-3 text-right text-cyan-400 font-semibold">
+                            {fDivYieldPct.toFixed(2)}%
+                          </td>
+                          <td className="py-3.5 px-3 text-right text-amber-300">
+                            {fYieldOnCostPct.toFixed(2)}%
+                          </td>
+                        </tr>
+                      );
+                    })()}
                   </tfoot>
                 </table>
               </div>
