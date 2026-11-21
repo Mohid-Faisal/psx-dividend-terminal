@@ -1126,24 +1126,24 @@ export default function HomePage() {
                             {pos.name}
                           </div>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono-num font-semibold">
+                        <td className="py-3 px-3 text-right font-mono-num font-semibold whitespace-nowrap">
                           {pos.shares.toLocaleString()}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono-num text-slate-300">
+                        <td className="py-3 px-3 text-right font-mono-num text-slate-300 whitespace-nowrap">
                           Rs. {formatPkr(pos.wac, 2)}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono-num text-slate-300">
+                        <td className="py-3 px-3 text-right font-mono-num text-slate-300 whitespace-nowrap">
                           Rs. {formatPkr(pos.costBasis, 2)}
                         </td>
                         {/* Strictly Read-Only Live Price Badge */}
-                        <td className="py-3 px-3 text-right">
+                        <td className="py-3 px-3 text-right whitespace-nowrap">
                           <div className="inline-flex flex-col items-end">
-                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 font-mono-num font-bold text-emerald-300">
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 font-mono-num font-bold text-emerald-300 whitespace-nowrap">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                               Rs. {formatPkr(pos.livePrice, 2)}
                             </span>
                             <span
-                              className={`text-[10px] font-mono-num mt-0.5 ${
+                              className={`text-[10px] font-mono-num mt-0.5 whitespace-nowrap ${
                                 pos.dayChange >= 0
                                   ? "text-emerald-400"
                                   : "text-rose-400"
@@ -1156,14 +1156,14 @@ export default function HomePage() {
                             </span>
                           </div>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono-num font-semibold">
+                        <td className="py-3 px-3 text-right font-mono-num font-semibold whitespace-nowrap">
                           Rs. {formatPkr(pos.marketValue, 2)}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono-num text-slate-300">
+                        <td className="py-3 px-3 text-right font-mono-num text-slate-300 whitespace-nowrap">
                           {pos.weightPct.toFixed(2)}%
                         </td>
                         <td
-                          className={`py-3 px-3 text-right font-mono-num font-semibold ${
+                          className={`py-3 px-3 text-right font-mono-num font-semibold whitespace-nowrap ${
                             pos.unrealizedPnl >= 0
                               ? "text-emerald-400"
                               : "text-rose-400"
@@ -1178,12 +1178,11 @@ export default function HomePage() {
                             {pos.unrealizedPnlPct.toFixed(2)}%)
                           </div>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono-num text-amber-400 font-semibold">
-                          Rs.{" "}
-                          {formatPkr(pos.netDividendsPaid, 2)}
+                        <td className="py-3 px-3 text-right font-mono-num text-amber-400 font-semibold whitespace-nowrap">
+                          Rs. {formatPkr(pos.netDividendsPaid, 2)}
                         </td>
                         <td
-                          className={`py-3 px-3 text-right font-mono-num font-bold ${
+                          className={`py-3 px-3 text-right font-mono-num font-bold whitespace-nowrap ${
                             pos.totalReturn >= 0
                               ? "text-emerald-400"
                               : "text-rose-400"
@@ -1230,7 +1229,7 @@ export default function HomePage() {
                             )}
                           </div>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono-num text-amber-300 font-semibold">
+                        <td className="py-3 px-3 text-right font-mono-num text-amber-300 font-semibold whitespace-nowrap">
                           {pos.yieldOnCostPct.toFixed(2)}%
                         </td>
                       </tr>
@@ -1264,49 +1263,66 @@ export default function HomePage() {
                       const fYieldOnCostPct =
                         fCost > 0 ? (fNetDiv / fCost) * 100 : 0;
 
+                      const fUnrealizedPct =
+                        fCost > 0 ? (fUnrealized / fCost) * 100 : 0;
+                      const fTotalReturnPct =
+                        fCost > 0 ? (fTotalReturn / fCost) * 100 : 0;
+
                       return (
                         <tr className="border-t-2 border-white/15 text-xs font-mono-num font-bold bg-white/[0.02]">
-                          <td className="py-3.5 px-3">
+                          <td className="py-3.5 px-3 whitespace-nowrap">
                             TOTAL ({filteredHoldings.length} ACTIVE HOLDINGS)
                           </td>
-                          <td className="py-3.5 px-3 text-right">
+                          <td className="py-3.5 px-3 text-right whitespace-nowrap">
                             {fShares.toLocaleString()}
                           </td>
-                          <td className="py-3.5 px-3 text-right text-slate-400">
+                          <td className="py-3.5 px-3 text-right text-slate-400 whitespace-nowrap">
                             —
                           </td>
-                          <td className="py-3.5 px-3 text-right">
+                          <td className="py-3.5 px-3 text-right whitespace-nowrap">
                             Rs. {formatPkr(fCost, 2)}
                           </td>
-                          <td className="py-3.5 px-3 text-right text-slate-400">
+                          <td className="py-3.5 px-3 text-right text-slate-400 whitespace-nowrap">
                             LIVE PSX
                           </td>
-                          <td className="py-3.5 px-3 text-right">
+                          <td className="py-3.5 px-3 text-right whitespace-nowrap">
                             Rs. {formatPkr(fMv, 2)}
                           </td>
-                          <td className="py-3.5 px-3 text-right">100.0%</td>
+                          <td className="py-3.5 px-3 text-right whitespace-nowrap">100.0%</td>
                           <td
-                            className={`py-3.5 px-3 text-right ${
+                            className={`py-3.5 px-3 text-right whitespace-nowrap ${
                               fUnrealized >= 0
                                 ? "text-emerald-400"
                                 : "text-rose-400"
                             }`}
                           >
-                            {fUnrealized >= 0 ? "+" : ""}Rs.{" "}
-                            {formatPkr(fUnrealized, 2)}
+                            <div>
+                              {fUnrealized >= 0 ? "+" : ""}Rs.{" "}
+                              {formatPkr(fUnrealized, 2)}
+                            </div>
+                            <div className="text-[10px] font-normal">
+                              ({fUnrealizedPct >= 0 ? "+" : ""}
+                              {fUnrealizedPct.toFixed(2)}%)
+                            </div>
                           </td>
-                          <td className="py-3.5 px-3 text-right text-amber-400">
+                          <td className="py-3.5 px-3 text-right text-amber-400 whitespace-nowrap">
                             Rs. {formatPkr(fNetDiv, 2)}
                           </td>
                           <td
-                            className={`py-3.5 px-3 text-right ${
+                            className={`py-3.5 px-3 text-right whitespace-nowrap ${
                               fTotalReturn >= 0
                                 ? "text-emerald-400"
                                 : "text-rose-400"
                             }`}
                           >
-                            {fTotalReturn >= 0 ? "+" : ""}Rs.{" "}
-                            {formatPkr(fTotalReturn, 2)}
+                            <div>
+                              {fTotalReturn >= 0 ? "+" : ""}Rs.{" "}
+                              {formatPkr(fTotalReturn, 2)}
+                            </div>
+                            <div className="text-[10px] font-normal">
+                              ({fTotalReturnPct >= 0 ? "+" : ""}
+                              {fTotalReturnPct.toFixed(2)}%)
+                            </div>
                           </td>
                           <td className="py-3.5 px-3 text-right">
                             <div className="inline-flex flex-col items-end">
@@ -1333,7 +1349,7 @@ export default function HomePage() {
                               )}
                             </div>
                           </td>
-                          <td className="py-3.5 px-3 text-right text-amber-300">
+                          <td className="py-3.5 px-3 text-right text-amber-300 whitespace-nowrap">
                             {fYieldOnCostPct.toFixed(2)}%
                           </td>
                         </tr>
@@ -1480,17 +1496,17 @@ export default function HomePage() {
                       <td className="py-2.5 px-3 text-right font-mono-num font-semibold">
                         {t.shares.toLocaleString()}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono-num">
+                      <td className="py-2.5 px-3 text-right font-mono-num whitespace-nowrap">
                         Rs. {t.price.toFixed(2)}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono-num text-slate-300">
+                      <td className="py-2.5 px-3 text-right font-mono-num text-slate-300 whitespace-nowrap">
                         Rs. {Math.round(t.grossAmount).toLocaleString()}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono-num text-slate-400">
+                      <td className="py-2.5 px-3 text-right font-mono-num text-slate-400 whitespace-nowrap">
                         Rs. {(t.brkFees + t.sst).toFixed(2)}
                       </td>
                       <td
-                        className={`py-2.5 px-3 text-right font-mono-num font-semibold ${
+                        className={`py-2.5 px-3 text-right font-mono-num font-semibold whitespace-nowrap ${
                           t.action === "Buy"
                             ? "text-indigo-300"
                             : "text-emerald-400"
@@ -1498,7 +1514,7 @@ export default function HomePage() {
                       >
                         Rs. {Math.round(t.netCashFlow).toLocaleString()}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono-num text-slate-300">
+                      <td className="py-2.5 px-3 text-right font-mono-num text-slate-300 whitespace-nowrap">
                         Rs. {t.runningWac.toFixed(2)}
                       </td>
                       <td className="py-2.5 px-3 text-slate-400 max-w-[200px] truncate">
@@ -1534,7 +1550,7 @@ export default function HomePage() {
                         .toLocaleString()}
                     </td>
                     <td className="py-3.5 px-3 text-right text-slate-400">—</td>
-                    <td className="py-3.5 px-3 text-right">
+                    <td className="py-3.5 px-3 text-right whitespace-nowrap">
                       Rs.{" "}
                       {Math.round(
                         filteredTransactions.reduce(
@@ -1543,7 +1559,7 @@ export default function HomePage() {
                         )
                       ).toLocaleString()}
                     </td>
-                    <td className="py-3.5 px-3 text-right text-slate-300">
+                    <td className="py-3.5 px-3 text-right text-slate-300 whitespace-nowrap">
                       Rs.{" "}
                       {Math.round(
                         filteredTransactions.reduce(
@@ -1552,7 +1568,7 @@ export default function HomePage() {
                         )
                       ).toLocaleString()}
                     </td>
-                    <td className="py-3.5 px-3 text-right text-indigo-300">
+                    <td className="py-3.5 px-3 text-right text-indigo-300 whitespace-nowrap">
                       Rs.{" "}
                       {Math.round(
                         filteredTransactions.reduce(
@@ -1770,16 +1786,16 @@ export default function HomePage() {
                         <td className="py-2.5 px-2.5 text-right font-mono-num">
                           {d.sharesEligible.toLocaleString()}
                         </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono-num text-emerald-300 font-semibold">
+                        <td className="py-2.5 px-2.5 text-right font-mono-num text-emerald-300 font-semibold whitespace-nowrap">
                           Rs. {d.dps.toFixed(2)}
                         </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono-num text-slate-300">
+                        <td className="py-2.5 px-2.5 text-right font-mono-num text-slate-300 whitespace-nowrap">
                           Rs. {Math.round(d.grossDividend).toLocaleString()}
                         </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono-num text-rose-400">
+                        <td className="py-2.5 px-2.5 text-right font-mono-num text-rose-400 whitespace-nowrap">
                           -Rs. {Math.round(d.wht + d.zakat).toLocaleString()}
                         </td>
-                        <td className="py-2.5 px-2.5 text-right font-mono-num font-bold text-amber-400">
+                        <td className="py-2.5 px-2.5 text-right font-mono-num font-bold text-amber-400 whitespace-nowrap">
                           Rs. {Math.round(d.netDividend).toLocaleString()}
                         </td>
                         <td className="py-2.5 px-2.5 text-center">
@@ -1837,7 +1853,7 @@ export default function HomePage() {
                       <td colSpan={6} className="py-3.5 px-2.5">
                         TOTAL ({filteredDividends.length} DIVIDEND ENTRIES)
                       </td>
-                      <td className="py-3.5 px-2.5 text-right">
+                      <td className="py-3.5 px-2.5 text-right whitespace-nowrap">
                         Rs.{" "}
                         {Math.round(
                           filteredDividends.reduce(
@@ -1846,7 +1862,7 @@ export default function HomePage() {
                           )
                         ).toLocaleString()}
                       </td>
-                      <td className="py-3.5 px-2.5 text-right text-rose-400">
+                      <td className="py-3.5 px-2.5 text-right text-rose-400 whitespace-nowrap">
                         -Rs.{" "}
                         {Math.round(
                           filteredDividends.reduce(
@@ -1855,7 +1871,7 @@ export default function HomePage() {
                           )
                         ).toLocaleString()}
                       </td>
-                      <td className="py-3.5 px-2.5 text-right text-amber-400">
+                      <td className="py-3.5 px-2.5 text-right text-amber-400 whitespace-nowrap">
                         Rs.{" "}
                         {Math.round(
                           filteredDividends.reduce(
