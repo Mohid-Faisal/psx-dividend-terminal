@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 :root,
 [data-theme="light"] {
@@ -58,85 +59,87 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Rune Design System: Specular Chrome & Rose Metallic Surfaces */
-.rune-card {
-  background: var(--bg-surface);
-  border-top: 1px solid var(--border-chrome-top);
-  border-left: 1px solid var(--border-chrome-side);
-  border-right: 1px solid var(--border-chrome-side);
-  border-bottom: 1px solid var(--border-chrome-bottom);
-  box-shadow: var(--shadow-card);
-  border-radius: 16px;
-  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 0.18s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.18s cubic-bezier(0.22, 1, 0.36, 1);
-}
+@layer components {
+  /* Rune Design System: Specular Chrome & Rose Metallic Surfaces */
+  .rune-card {
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border-chrome-top);
+    border-left: 1px solid var(--border-chrome-side);
+    border-right: 1px solid var(--border-chrome-side);
+    border-bottom: 1px solid var(--border-chrome-bottom);
+    box-shadow: var(--shadow-card);
+    border-radius: 16px;
+    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  }
 
-.rune-card-rose {
-  background: linear-gradient(
-    165deg,
-    rgba(245, 158, 11, 0.09) 0%,
-    var(--bg-surface) 60%
-  );
-  border-top: 1px solid var(--border-rose-top);
-  border-left: 1px solid var(--border-rose-side);
-  border-right: 1px solid var(--border-rose-side);
-  border-bottom: 1px solid var(--border-chrome-bottom);
-  box-shadow: var(--shadow-card);
-  border-radius: 16px;
-}
+  .rune-card-rose {
+    background: linear-gradient(
+      165deg,
+      rgba(245, 158, 11, 0.09) 0%,
+      var(--bg-surface) 60%
+    );
+    border-top: 1px solid var(--border-rose-top);
+    border-left: 1px solid var(--border-rose-side);
+    border-right: 1px solid var(--border-rose-side);
+    border-bottom: 1px solid var(--border-chrome-bottom);
+    box-shadow: var(--shadow-card);
+    border-radius: 16px;
+  }
 
-.rune-header {
-  background: var(--bg-glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--border-chrome-bottom);
-  box-shadow: 0 2px 14px -3px rgba(15, 23, 42, 0.05);
-}
+  .rune-header {
+    background: var(--bg-glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border-chrome-bottom);
+    box-shadow: 0 2px 14px -3px rgba(15, 23, 42, 0.05);
+  }
 
-.rune-pill {
-  background: var(--bg-elevated);
-  border-top: 1px solid var(--border-chrome-top);
-  border-left: 1px solid var(--border-chrome-side);
-  border-right: 1px solid var(--border-chrome-side);
-  border-bottom: 1px solid var(--border-chrome-bottom);
-  border-radius: 9999px;
-  color: var(--text-secondary);
-  transition: all 0.16s cubic-bezier(0.22, 1, 0.36, 1);
-}
+  .rune-pill {
+    background: var(--bg-elevated);
+    border-top: 1px solid var(--border-chrome-top);
+    border-left: 1px solid var(--border-chrome-side);
+    border-right: 1px solid var(--border-chrome-side);
+    border-bottom: 1px solid var(--border-chrome-bottom);
+    border-radius: 9999px;
+    color: var(--text-secondary);
+    transition: all 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  }
 
-.rune-pill:hover {
-  background: var(--bg-surface);
-  color: var(--text-primary);
-}
+  .rune-pill:hover {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+  }
 
-.rune-pill-active {
-  background: rgba(99, 102, 241, 0.12) !important;
-  border-color: rgba(99, 102, 241, 0.45) !important;
-  color: #4338ca !important;
-  box-shadow: 0 1px 6px -1px rgba(99, 102, 241, 0.2);
-}
+  .rune-pill-active {
+    background: rgba(99, 102, 241, 0.12) !important;
+    border-color: rgba(99, 102, 241, 0.45) !important;
+    color: #4338ca !important;
+    box-shadow: 0 1px 6px -1px rgba(99, 102, 241, 0.2);
+  }
 
-[data-theme="dark"] .rune-pill-active {
-  background: rgba(99, 102, 241, 0.22) !important;
-  border-color: rgba(99, 102, 241, 0.6) !important;
-  color: #a5b4fc !important;
-  box-shadow: 0 0 14px -2px rgba(99, 102, 241, 0.4);
-}
+  [data-theme="dark"] .rune-pill-active {
+    background: rgba(99, 102, 241, 0.22) !important;
+    border-color: rgba(99, 102, 241, 0.6) !important;
+    color: #a5b4fc !important;
+    box-shadow: 0 0 14px -2px rgba(99, 102, 241, 0.4);
+  }
 
-.rune-input {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  border: 1px solid var(--border-chrome-side);
-  border-top-color: var(--border-chrome-top);
-  border-radius: 10px;
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
+  .rune-input {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--border-chrome-side);
+    border-top-color: var(--border-chrome-top);
+    border-radius: 10px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
 
-.rune-input:focus {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+  .rune-input:focus {
+    border-color: #6366f1;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+  }
 }
 
 /* =====================================================================
@@ -198,6 +201,9 @@ body {
 [data-theme="light"] svg .fill-emerald-300,
 [data-theme="light"] svg .fill-emerald-400 {
   fill: #047857 !important;
+}
+[data-theme="light"] svg .fill-amber-400 {
+  fill: #b45309 !important;
 }
 
 /* Borders & Dividers in Light Mode */
