@@ -1198,19 +1198,36 @@ export default function HomePage() {
                             {pos.totalReturnPct.toFixed(2)}%)
                           </div>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono-num text-cyan-400 font-semibold">
-                          <div>{pos.currentYieldPct.toFixed(2)}%</div>
-                          <div
-                            className="text-[10px] font-normal text-slate-400 whitespace-nowrap"
-                            title={
-                              pos.prevYieldPct > 0 && pos.prevYieldYear
-                                ? `Previous fiscal year (${pos.prevYieldYear}) yield`
-                                : "No previous fiscal year paid dividends recorded"
-                            }
-                          >
-                            {pos.prevYieldPct > 0
-                              ? `'${String(pos.prevYieldYear).slice(-2)}: ${pos.prevYieldPct.toFixed(2)}%`
-                              : "—"}
+                        <td
+                          className="py-3 px-3 text-right font-mono-num text-cyan-400 font-semibold"
+                          title={
+                            pos.prevYieldPct > 0 && pos.prevYieldYear
+                              ? `Current (${pos.currentYieldYear || "FY"}): ${pos.currentYieldPct.toFixed(2)}% vs Previous (${pos.prevYieldYear}): ${pos.prevYieldPct.toFixed(2)}% (${pos.currentYieldPct - pos.prevYieldPct >= 0 ? "+" : ""}${(pos.currentYieldPct - pos.prevYieldPct).toFixed(2)}%)`
+                              : "No previous fiscal year paid dividends recorded"
+                          }
+                        >
+                          <div className="inline-flex items-baseline justify-end gap-1 whitespace-nowrap">
+                            <span>{pos.currentYieldPct.toFixed(2)}%</span>
+                            {pos.prevYieldPct > 0 && (() => {
+                              const diff = pos.currentYieldPct - pos.prevYieldPct;
+                              return (
+                                <span
+                                  className={`text-[10px] font-semibold ${
+                                    diff >= 0 ? "text-emerald-400" : "text-rose-400"
+                                  }`}
+                                >
+                                  {diff >= 0 ? "+" : ""}
+                                  {diff.toFixed(2)}%
+                                </span>
+                              );
+                            })()}
+                          </div>
+                          <div className="text-[11px] font-semibold text-purple-300 whitespace-nowrap">
+                            {pos.prevYieldPct > 0 ? (
+                              `'${String(pos.prevYieldYear).slice(-2)}: ${pos.prevYieldPct.toFixed(2)}%`
+                            ) : (
+                              <span className="text-slate-500 font-normal">—</span>
+                            )}
                           </div>
                         </td>
                         <td className="py-3 px-3 text-right font-mono-num text-amber-300 font-semibold">
@@ -1292,11 +1309,28 @@ export default function HomePage() {
                             {formatPkr(fTotalReturn, 2)}
                           </td>
                           <td className="py-3.5 px-3 text-right text-cyan-400 font-semibold">
-                            <div>{fDivYieldPct.toFixed(2)}%</div>
-                            <div className="text-[10px] font-normal text-slate-400 whitespace-nowrap">
-                              {fPrevDivYieldPct > 0
-                                ? `Prev: ${fPrevDivYieldPct.toFixed(2)}%`
-                                : "—"}
+                            <div className="inline-flex items-baseline justify-end gap-1 whitespace-nowrap">
+                              <span>{fDivYieldPct.toFixed(2)}%</span>
+                              {fPrevDivYieldPct > 0 && (() => {
+                                const fDiff = fDivYieldPct - fPrevDivYieldPct;
+                                return (
+                                  <span
+                                    className={`text-[10px] font-semibold ${
+                                      fDiff >= 0 ? "text-emerald-400" : "text-rose-400"
+                                    }`}
+                                  >
+                                    {fDiff >= 0 ? "+" : ""}
+                                    {fDiff.toFixed(2)}%
+                                  </span>
+                                );
+                              })()}
+                            </div>
+                            <div className="text-[11px] font-semibold text-purple-300 whitespace-nowrap">
+                              {fPrevDivYieldPct > 0 ? (
+                                `Prev: ${fPrevDivYieldPct.toFixed(2)}%`
+                              ) : (
+                                <span className="text-slate-500 font-normal">—</span>
+                              )}
                             </div>
                           </td>
                           <td className="py-3.5 px-3 text-right text-amber-300">
