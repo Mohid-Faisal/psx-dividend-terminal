@@ -1218,7 +1218,6 @@ export default function HomePage() {
                                     diff >= 0 ? "text-emerald-400" : "text-rose-400"
                                   }`}
                                 >
-                                  &apos;{String(pos.prevYieldYear).slice(-2)}:{" "}
                                   {pos.prevYieldPct.toFixed(2)}% (
                                   {diff >= 0 ? "+" : ""}
                                   {diff.toFixed(2)}%)
@@ -1322,7 +1321,7 @@ export default function HomePage() {
                                       fDiff >= 0 ? "text-emerald-400" : "text-rose-400"
                                     }`}
                                   >
-                                    Prev: {fPrevDivYieldPct.toFixed(2)}% (
+                                    {fPrevDivYieldPct.toFixed(2)}% (
                                     {fDiff >= 0 ? "+" : ""}
                                     {fDiff.toFixed(2)}%)
                                   </span>
