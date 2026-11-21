@@ -88,6 +88,50 @@ body {
     border-radius: 16px;
   }
 
+  .rune-card-emerald,
+  .rune-card-indigo,
+  .rune-card-crimson,
+  .rune-card-cyan,
+  .rune-card-purple {
+    background: linear-gradient(
+      165deg,
+      var(--card-tint) 0%,
+      var(--bg-surface) 62%
+    );
+    border-top: 1px solid var(--card-border-top);
+    border-left: 1px solid var(--card-border-side);
+    border-right: 1px solid var(--card-border-side);
+    border-bottom: 1px solid var(--border-chrome-bottom);
+    box-shadow: var(--shadow-card);
+    border-radius: 16px;
+  }
+
+  .rune-card-emerald {
+    --card-tint: rgba(16, 185, 129, 0.1);
+    --card-border-top: rgba(16, 185, 129, 0.36);
+    --card-border-side: rgba(16, 185, 129, 0.18);
+  }
+  .rune-card-indigo {
+    --card-tint: rgba(99, 102, 241, 0.1);
+    --card-border-top: rgba(99, 102, 241, 0.36);
+    --card-border-side: rgba(99, 102, 241, 0.18);
+  }
+  .rune-card-crimson {
+    --card-tint: rgba(244, 63, 94, 0.1);
+    --card-border-top: rgba(244, 63, 94, 0.36);
+    --card-border-side: rgba(244, 63, 94, 0.18);
+  }
+  .rune-card-cyan {
+    --card-tint: rgba(6, 182, 212, 0.1);
+    --card-border-top: rgba(6, 182, 212, 0.36);
+    --card-border-side: rgba(6, 182, 212, 0.18);
+  }
+  .rune-card-purple {
+    --card-tint: rgba(139, 92, 246, 0.1);
+    --card-border-top: rgba(139, 92, 246, 0.36);
+    --card-border-side: rgba(139, 92, 246, 0.18);
+  }
+
   .rune-header {
     background: var(--bg-glass);
     backdrop-filter: blur(20px);

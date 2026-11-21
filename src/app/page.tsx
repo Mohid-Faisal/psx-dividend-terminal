@@ -840,7 +840,7 @@ export default function HomePage() {
         {activeTab === "dashboard" && (
           <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
           {/* 1. Live Market Value */}
-          <div className="rune-card p-4">
+          <div className="rune-card-emerald p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span>Live Market Value</span>
               <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-mono-num text-[10px]">
@@ -870,7 +870,7 @@ export default function HomePage() {
           </div>
 
           {/* 2. Active Cost Basis (WAC) */}
-          <div className="rune-card p-4">
+          <div className="rune-card-indigo p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span>Active Cost Basis (WAC)</span>
               <span className="font-mono-num text-[11px] text-indigo-400">
@@ -891,7 +891,13 @@ export default function HomePage() {
           </div>
 
           {/* 3. Unrealized Capital P&L */}
-          <div className="rune-card p-4">
+          <div
+            className={`${
+              summary.totalUnrealizedPnl >= 0
+                ? "rune-card-emerald"
+                : "rune-card-crimson"
+            } p-4`}
+          >
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span>Unrealized Capital P&amp;L</span>
               <span
@@ -961,7 +967,13 @@ export default function HomePage() {
           </div>
 
           {/* 5. All-Inclusive Total Return */}
-          <div className="rune-card p-4">
+          <div
+            className={`${
+              summary.totalAllInclusiveReturn >= 0
+                ? "rune-card-cyan"
+                : "rune-card-crimson"
+            } p-4`}
+          >
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span>All-Inclusive Return</span>
               <span className="font-mono-num text-[11px] text-emerald-400">
@@ -994,7 +1006,7 @@ export default function HomePage() {
           </div>
 
           {/* 6. Out-of-Pocket Cash & MCB Toggle */}
-          <div className="rune-card p-4">
+          <div className="rune-card-purple p-4">
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span>Net Out-of-Pocket Cash</span>
               <button
