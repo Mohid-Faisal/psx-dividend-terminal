@@ -97,114 +97,129 @@ export async function forceReseedSupabase(): Promise<void> {
   await supabase.from("psx_dividends").upsert(divRows, { onConflict: "id" });
 }
 
-export async function fetchPortfolioFromSupabase(): Promise<PortfolioState> {
-  await seedSupabaseIfNeeded();
+export async function fetchPortfolioFromSupabase(
+  allowSeed = true
+): Promise<PortfolioState> {
+  try {
+    const [compRes, txRes, divRes, annRes, setRes] = await Promise.all([
+      supabase.from("psx_companies").select("*").order("ticker", { ascending: true }),
+      supabase
+        .from("psx_transactions")
+        .select("*")
+        .order("date", { ascending: true })
+        .order("id", { ascending: true }),
+      supabase
+        .from("psx_dividends")
+        .select("*")
+        .order("payment_date", { ascending: true })
+        .order("id", { ascending: true }),
+      supabase
+        .from("psx_announcements")
+        .select("*")
+        .order("created_at", { ascending: false }),
+      supabase.from("psx_settings").select("*").eq("id", 1).maybeSingle(),
+    ]);
 
-  const [compRes, txRes, divRes, annRes, setRes] = await Promise.all([
-    supabase.from("psx_companies").select("*").order("ticker", { ascending: true }),
-    supabase
-      .from("psx_transactions")
-      .select("*")
-      .order("date", { ascending: true })
-      .order("id", { ascending: true }),
-    supabase
-      .from("psx_dividends")
-      .select("*")
-      .order("payment_date", { ascending: true })
-      .order("id", { ascending: true }),
-    supabase
-      .from("psx_announcements")
-      .select("*")
-      .order("created_at", { ascending: false }),
-    supabase.from("psx_settings").select("*").eq("id", 1).maybeSingle(),
-  ]);
+    if (
+      allowSeed &&
+      !compRes.error &&
+      compRes.data &&
+      compRes.data.length === 0
+    ) {
+      await forceReseedSupabase();
+      return fetchPortfolioFromSupabase(false);
+    }
 
-  if (compRes.error || !compRes.data || compRes.data.length === 0) {
+    if (compRes.error || !compRes.data || compRes.data.length === 0) {
+      return seedData as unknown as PortfolioState;
+    }
+
+    const companies: Company[] = compRes.data.map((r) => ({
+      ticker: r.ticker,
+      name: r.name,
+      frequency: r.frequency,
+      price: Number(r.price),
+      ldcp: Number(r.ldcp),
+      change: Number(r.change),
+      changePct: Number(r.change_pct),
+      sector: r.sector,
+      pe: r.pe,
+      high52: r.high52,
+      dayRange: r.day_range,
+      volume: r.volume,
+      asOf: r.as_of,
+    }));
+
+    const transactions: Transaction[] = (txRes.data || []).map((r) => ({
+      id: Number(r.id),
+      date: r.date,
+      ticker: r.ticker,
+      company: r.company,
+      action: r.action as "Buy" | "Sell",
+      shares: Number(r.shares),
+      price: Number(r.price),
+      brkFees: Number(r.brk_fees),
+      sst: Number(r.sst),
+      notes: r.notes || "",
+    }));
+
+    const dividends: Dividend[] = (divRes.data || []).map((r) => ({
+      id: Number(r.id),
+      paymentDate: r.payment_date || "",
+      ticker: r.ticker,
+      year: r.year || "",
+      term: r.term || "Q1",
+      sharesEligible: Number(r.shares_eligible),
+      status: (r.status as "Paid" | "Unpaid") || "Paid",
+      announcementDate: r.announcement_date || "",
+      expectedPaymentDate: r.expected_payment_date || "",
+      dps: Number(r.dps),
+      wht: Number(r.wht),
+      zakat: Number(r.zakat),
+      reinvest: (r.reinvest as "Yes" | "No") || "No",
+      reinvestPrice: Number(r.reinvest_price || 0),
+      announcementId: r.announcement_id || undefined,
+    }));
+
+    const announcements: PsxAnnouncement[] = (annRes.data || []).map((r) => ({
+      id: r.id,
+      ticker: r.ticker,
+      announcementDate: r.announcement_date,
+      title: r.title,
+      pdfUrl: r.pdf_url,
+      isDividend: Boolean(r.is_dividend),
+      parsedDps: r.parsed_dps !== null ? Number(r.parsed_dps) : null,
+      parsedTerm: r.parsed_term || "Q1",
+      parsedYear: r.parsed_year || "2026",
+      notified: Boolean(r.notified),
+      addedToDividends: Boolean(r.added_to_dividends),
+      createdAt: r.created_at,
+    }));
+
+    const settings: PortfolioSettings = setRes.data
+      ? {
+          defaultBrokerageRate: Number(setRes.data.default_brokerage_rate),
+          minBrokeragePerShare: Number(setRes.data.min_brokerage_per_share),
+          sstRate: Number(setRes.data.sst_rate),
+          defaultFilerWhtRate: Number(setRes.data.default_filer_wht_rate),
+          includeLegacyMcbInCashflow: Boolean(
+            setRes.data.include_legacy_mcb_in_cashflow
+          ),
+        }
+      : (seedData.settings as PortfolioSettings);
+
+    return {
+      version: "3.0.0",
+      lastUpdated: new Date().toISOString(),
+      currency: "PKR",
+      settings,
+      companies,
+      transactions,
+      dividends,
+      announcements,
+    };
+  } catch (e) {
+    console.error("Supabase fetch error:", e);
     return seedData as unknown as PortfolioState;
   }
-
-  const companies: Company[] = compRes.data.map((r) => ({
-    ticker: r.ticker,
-    name: r.name,
-    frequency: r.frequency,
-    price: Number(r.price),
-    ldcp: Number(r.ldcp),
-    change: Number(r.change),
-    changePct: Number(r.change_pct),
-    sector: r.sector,
-    pe: r.pe,
-    high52: r.high52,
-    dayRange: r.day_range,
-    volume: r.volume,
-    asOf: r.as_of,
-  }));
-
-  const transactions: Transaction[] = (txRes.data || []).map((r) => ({
-    id: Number(r.id),
-    date: r.date,
-    ticker: r.ticker,
-    company: r.company,
-    action: r.action as "Buy" | "Sell",
-    shares: Number(r.shares),
-    price: Number(r.price),
-    brkFees: Number(r.brk_fees),
-    sst: Number(r.sst),
-    notes: r.notes || "",
-  }));
-
-  const dividends: Dividend[] = (divRes.data || []).map((r) => ({
-    id: Number(r.id),
-    paymentDate: r.payment_date || "",
-    ticker: r.ticker,
-    year: r.year || "",
-    term: r.term || "Q1",
-    sharesEligible: Number(r.shares_eligible),
-    status: (r.status as "Paid" | "Unpaid") || "Paid",
-    announcementDate: r.announcement_date || "",
-    expectedPaymentDate: r.expected_payment_date || "",
-    dps: Number(r.dps),
-    wht: Number(r.wht),
-    zakat: Number(r.zakat),
-    reinvest: (r.reinvest as "Yes" | "No") || "No",
-    reinvestPrice: Number(r.reinvest_price || 0),
-    announcementId: r.announcement_id || undefined,
-  }));
-
-  const announcements: PsxAnnouncement[] = (annRes.data || []).map((r) => ({
-    id: r.id,
-    ticker: r.ticker,
-    announcementDate: r.announcement_date,
-    title: r.title,
-    pdfUrl: r.pdf_url,
-    isDividend: Boolean(r.is_dividend),
-    parsedDps: r.parsed_dps !== null ? Number(r.parsed_dps) : null,
-    parsedTerm: r.parsed_term || "Q1",
-    parsedYear: r.parsed_year || "2026",
-    notified: Boolean(r.notified),
-    addedToDividends: Boolean(r.added_to_dividends),
-    createdAt: r.created_at,
-  }));
-
-  const settings: PortfolioSettings = setRes.data
-    ? {
-        defaultBrokerageRate: Number(setRes.data.default_brokerage_rate),
-        minBrokeragePerShare: Number(setRes.data.min_brokerage_per_share),
-        sstRate: Number(setRes.data.sst_rate),
-        defaultFilerWhtRate: Number(setRes.data.default_filer_wht_rate),
-        includeLegacyMcbInCashflow: Boolean(
-          setRes.data.include_legacy_mcb_in_cashflow
-        ),
-      }
-    : (seedData.settings as PortfolioSettings);
-
-  return {
-    version: "3.0.0",
-    lastUpdated: new Date().toISOString(),
-    currency: "PKR",
-    settings,
-    companies,
-    transactions,
-    dividends,
-    announcements,
-  };
 }
