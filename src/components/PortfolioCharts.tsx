@@ -52,7 +52,10 @@ export function MonthlyDividendChart({
 }) {
   const maxGross = Math.max(...data.map((d) => d.gross), 1);
   const maxCum = Math.max(...data.map((d) => d.cumulativeNet), 1);
-  const avgMonthlyNet = data.length > 0 ? totalNet / data.length : 0;
+  const windowGross = data.reduce((s, d) => s + d.gross, 0);
+  const windowNet = data.reduce((s, d) => s + d.net, 0);
+  const windowTax = data.reduce((s, d) => s + d.wht + d.zakat, 0);
+  const avgMonthlyNet = data.length > 0 ? windowNet / data.length : 0;
   const bestMonth =
     data.length > 0
       ? [...data].sort((a, b) => b.net - a.net)[0]
@@ -255,7 +258,7 @@ export function MonthlyDividendChart({
         <div className="p-2.5 rounded-xl bg-white/[0.03] border border-white/5">
           <div className="text-slate-400 text-[11px]">Gross Declared</div>
           <div className="font-mono-num font-semibold text-sm mt-0.5">
-            Rs. {totalGross.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            Rs. {windowGross.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
         <div className="p-2.5 rounded-xl bg-emerald-500/[0.06] border border-emerald-500/20">
@@ -263,7 +266,7 @@ export function MonthlyDividendChart({
             Net Realized Cash
           </div>
           <div className="font-mono-num font-semibold text-emerald-400 text-sm mt-0.5">
-            Rs. {totalNet.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            Rs. {windowNet.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
         <div className="p-2.5 rounded-xl bg-rose-500/[0.06] border border-rose-500/20">
@@ -271,7 +274,7 @@ export function MonthlyDividendChart({
             WHT + Zakat Deducted
           </div>
           <div className="font-mono-num font-semibold text-rose-400 text-sm mt-0.5">
-            Rs. {(totalWht + totalZakat).toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            Rs. {windowTax.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
         <div className="p-2.5 rounded-xl bg-amber-500/[0.06] border border-amber-500/20">
