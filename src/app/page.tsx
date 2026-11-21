@@ -1199,34 +1199,35 @@ export default function HomePage() {
                           </div>
                         </td>
                         <td
-                          className="py-3 px-3 text-right font-mono-num text-cyan-400 font-semibold"
+                          className="py-3 px-3 text-right"
                           title={
                             pos.prevYieldPct > 0 && pos.prevYieldYear
                               ? `Current (${pos.currentYieldYear || "FY"}): ${pos.currentYieldPct.toFixed(2)}% vs Previous (${pos.prevYieldYear}): ${pos.prevYieldPct.toFixed(2)}% (${pos.currentYieldPct - pos.prevYieldPct >= 0 ? "+" : ""}${(pos.currentYieldPct - pos.prevYieldPct).toFixed(2)}%)`
                               : "No previous fiscal year paid dividends recorded"
                           }
                         >
-                          <div className="inline-flex items-baseline justify-end gap-1 whitespace-nowrap">
-                            <span>{pos.currentYieldPct.toFixed(2)}%</span>
-                            {pos.prevYieldPct > 0 && (() => {
+                          <div className="inline-flex flex-col items-end">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/30 font-mono-num font-bold text-cyan-400 whitespace-nowrap">
+                              {pos.currentYieldPct.toFixed(2)}%
+                            </span>
+                            {pos.prevYieldPct > 0 ? (() => {
                               const diff = pos.currentYieldPct - pos.prevYieldPct;
                               return (
                                 <span
-                                  className={`text-[10px] font-semibold ${
+                                  className={`text-[10px] font-mono-num font-semibold mt-0.5 whitespace-nowrap ${
                                     diff >= 0 ? "text-emerald-400" : "text-rose-400"
                                   }`}
                                 >
+                                  &apos;{String(pos.prevYieldYear).slice(-2)}:{" "}
+                                  {pos.prevYieldPct.toFixed(2)}% (
                                   {diff >= 0 ? "+" : ""}
-                                  {diff.toFixed(2)}%
+                                  {diff.toFixed(2)}%)
                                 </span>
                               );
-                            })()}
-                          </div>
-                          <div className="text-[11px] font-semibold text-purple-300 whitespace-nowrap">
-                            {pos.prevYieldPct > 0 ? (
-                              `'${String(pos.prevYieldYear).slice(-2)}: ${pos.prevYieldPct.toFixed(2)}%`
-                            ) : (
-                              <span className="text-slate-500 font-normal">—</span>
+                            })() : (
+                              <span className="text-[10px] font-mono-num text-slate-500 mt-0.5">
+                                —
+                              </span>
                             )}
                           </div>
                         </td>
@@ -1308,28 +1309,28 @@ export default function HomePage() {
                             {fTotalReturn >= 0 ? "+" : ""}Rs.{" "}
                             {formatPkr(fTotalReturn, 2)}
                           </td>
-                          <td className="py-3.5 px-3 text-right text-cyan-400 font-semibold">
-                            <div className="inline-flex items-baseline justify-end gap-1 whitespace-nowrap">
-                              <span>{fDivYieldPct.toFixed(2)}%</span>
-                              {fPrevDivYieldPct > 0 && (() => {
+                          <td className="py-3.5 px-3 text-right">
+                            <div className="inline-flex flex-col items-end">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/30 font-mono-num font-bold text-cyan-400 whitespace-nowrap">
+                                {fDivYieldPct.toFixed(2)}%
+                              </span>
+                              {fPrevDivYieldPct > 0 ? (() => {
                                 const fDiff = fDivYieldPct - fPrevDivYieldPct;
                                 return (
                                   <span
-                                    className={`text-[10px] font-semibold ${
+                                    className={`text-[10px] font-mono-num font-semibold mt-0.5 whitespace-nowrap ${
                                       fDiff >= 0 ? "text-emerald-400" : "text-rose-400"
                                     }`}
                                   >
+                                    Prev: {fPrevDivYieldPct.toFixed(2)}% (
                                     {fDiff >= 0 ? "+" : ""}
-                                    {fDiff.toFixed(2)}%
+                                    {fDiff.toFixed(2)}%)
                                   </span>
                                 );
-                              })()}
-                            </div>
-                            <div className="text-[11px] font-semibold text-purple-300 whitespace-nowrap">
-                              {fPrevDivYieldPct > 0 ? (
-                                `Prev: ${fPrevDivYieldPct.toFixed(2)}%`
-                              ) : (
-                                <span className="text-slate-500 font-normal">—</span>
+                              })() : (
+                                <span className="text-[10px] font-mono-num text-slate-500 mt-0.5">
+                                  —
+                                </span>
                               )}
                             </div>
                           </td>
