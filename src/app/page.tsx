@@ -1104,6 +1104,7 @@ export default function HomePage() {
                       <th className="py-3 px-3 text-right">Total Return</th>
                       <th className="py-3 px-3 text-right">Div Yield %</th>
                       <th className="py-3 px-3 text-right">YoC %</th>
+                      <th className="py-3 px-3 text-right">ROI %</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5 text-xs">
@@ -1233,6 +1234,16 @@ export default function HomePage() {
                         <td className="py-3 px-3 text-right font-mono-num text-amber-300 font-semibold">
                           {pos.yieldOnCostPct.toFixed(2)}%
                         </td>
+                        <td
+                          className={`py-3 px-3 text-right font-mono-num font-bold whitespace-nowrap ${
+                            pos.totalReturnPct >= 0
+                              ? "text-emerald-400"
+                              : "text-rose-400"
+                          }`}
+                        >
+                          {pos.totalReturnPct >= 0 ? "+" : ""}
+                          {pos.totalReturnPct.toFixed(2)}%
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1263,6 +1274,9 @@ export default function HomePage() {
 
                       const fYieldOnCostPct =
                         fCost > 0 ? (fNetDiv / fCost) * 100 : 0;
+
+                      const fRoiPct =
+                        fCost > 0 ? (fTotalReturn / fCost) * 100 : 0;
 
                       return (
                         <tr className="border-t-2 border-white/15 text-xs font-mono-num font-bold bg-white/[0.02]">
@@ -1335,6 +1349,14 @@ export default function HomePage() {
                           </td>
                           <td className="py-3.5 px-3 text-right text-amber-300">
                             {fYieldOnCostPct.toFixed(2)}%
+                          </td>
+                          <td
+                            className={`py-3.5 px-3 text-right whitespace-nowrap ${
+                              fRoiPct >= 0 ? "text-emerald-400" : "text-rose-400"
+                            }`}
+                          >
+                            {fRoiPct >= 0 ? "+" : ""}
+                            {fRoiPct.toFixed(2)}%
                           </td>
                         </tr>
                       );
