@@ -114,6 +114,9 @@ export interface PositionSummary {
   totalReturnPct: number;
   yieldOnCostPct: number;
   currentYieldPct: number;
+  currentYieldYear: number;
+  prevYieldPct: number;
+  prevYieldYear: number;
   weightPct: number;
   high52: string;
   dayRange: string;

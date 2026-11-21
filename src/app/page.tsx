@@ -1199,7 +1199,19 @@ export default function HomePage() {
                           </div>
                         </td>
                         <td className="py-3 px-3 text-right font-mono-num text-cyan-400 font-semibold">
-                          {pos.currentYieldPct.toFixed(2)}%
+                          <div>{pos.currentYieldPct.toFixed(2)}%</div>
+                          <div
+                            className="text-[10px] font-normal text-slate-400 whitespace-nowrap"
+                            title={
+                              pos.prevYieldPct > 0 && pos.prevYieldYear
+                                ? `Previous fiscal year (${pos.prevYieldYear}) yield`
+                                : "No previous fiscal year paid dividends recorded"
+                            }
+                          >
+                            {pos.prevYieldPct > 0
+                              ? `'${String(pos.prevYieldYear).slice(-2)}: ${pos.prevYieldPct.toFixed(2)}%`
+                              : "—"}
+                          </div>
                         </td>
                         <td className="py-3 px-3 text-right font-mono-num text-amber-300 font-semibold">
                           {pos.yieldOnCostPct.toFixed(2)}%
@@ -1220,6 +1232,14 @@ export default function HomePage() {
                         fMv > 0
                           ? (filteredHoldings.reduce(
                               (s, p) => s + p.marketValue * (p.currentYieldPct / 100),
+                              0
+                            ) / fMv) * 100
+                          : 0;
+
+                      const fPrevDivYieldPct =
+                        fMv > 0
+                          ? (filteredHoldings.reduce(
+                              (s, p) => s + p.marketValue * (p.prevYieldPct / 100),
                               0
                             ) / fMv) * 100
                           : 0;
@@ -1272,7 +1292,12 @@ export default function HomePage() {
                             {formatPkr(fTotalReturn, 2)}
                           </td>
                           <td className="py-3.5 px-3 text-right text-cyan-400 font-semibold">
-                            {fDivYieldPct.toFixed(2)}%
+                            <div>{fDivYieldPct.toFixed(2)}%</div>
+                            <div className="text-[10px] font-normal text-slate-400 whitespace-nowrap">
+                              {fPrevDivYieldPct > 0
+                                ? `Prev: ${fPrevDivYieldPct.toFixed(2)}%`
+                                : "—"}
+                            </div>
                           </td>
                           <td className="py-3.5 px-3 text-right text-amber-300">
                             {fYieldOnCostPct.toFixed(2)}%

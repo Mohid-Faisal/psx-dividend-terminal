@@ -110,6 +110,9 @@ export function computePortfolioAnalytics(state: PortfolioState) {
       totalReturnPct: 0,
       yieldOnCostPct: 0,
       currentYieldPct: 0,
+      currentYieldYear: 0,
+      prevYieldPct: 0,
+      prevYieldYear: 0,
       weightPct: 0,
       high52: c.high52 || "N/A",
       dayRange: c.dayRange || "N/A",
@@ -199,6 +202,9 @@ export function computePortfolioAnalytics(state: PortfolioState) {
         totalReturnPct: 0,
         yieldOnCostPct: 0,
         currentYieldPct: 0,
+        currentYieldYear: 0,
+        prevYieldPct: 0,
+        prevYieldYear: 0,
         weightPct: 0,
         high52: "N/A",
         dayRange: "N/A",
@@ -400,10 +406,14 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     return match ? parseInt(match[match.length - 1]) : 0;
   }
 
-  // Calculate Running Fiscal Year DPS per ticker:
-  // For each stock, finds the latest fiscal year among PAID dividends and sums the paid DPS for that year.
+  // Calculate Running Fiscal Year DPS per ticker (and previous fiscal year DPS):
+  // For each stock, finds the latest fiscal year among PAID dividends and sums the paid DPS for that year
+  // as well as the previous fiscal year (latestFiscalYear - 1).
   // As quarters get paid (e.g. 1Q -> HYR -> 3Q -> YR), the running DPS and yield progress dynamically.
   const annualDpsMap = new Map<string, number>();
+  const prevAnnualDpsMap = new Map<string, number>();
+  const currentFiscalYearMap = new Map<string, number>();
+  const prevFiscalYearMap = new Map<string, number>();
 
   const paidDivsByTicker = new Map<string, DividendRecord[]>();
   for (const div of state.dividends) {
@@ -422,13 +432,23 @@ export function computePortfolioAnalytics(state: PortfolioState) {
       if (ey > latestFiscalYear) latestFiscalYear = ey;
     }
 
+    const prevFiscalYear = latestFiscalYear > 0 ? latestFiscalYear - 1 : 0;
     let runningDps = 0;
+    let prevRunningDps = 0;
     for (const d of divs) {
-      if (parseEndYear(d.year) === latestFiscalYear) {
+      const ey = parseEndYear(d.year);
+      if (ey === latestFiscalYear) {
         runningDps += Number(d.dps) || 0;
+      } else if (prevFiscalYear > 0 && ey === prevFiscalYear) {
+        prevRunningDps += Number(d.dps) || 0;
       }
     }
     annualDpsMap.set(sym, runningDps);
+    currentFiscalYearMap.set(sym, latestFiscalYear);
+    prevAnnualDpsMap.set(sym, prevRunningDps);
+    if (prevRunningDps > 0 && prevFiscalYear > 0) {
+      prevFiscalYearMap.set(sym, prevFiscalYear);
+    }
   }
 
   let totalCostBasis = 0;
@@ -455,8 +475,13 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     pos.yieldOnCostPct =
       pos.costBasis > 0 ? (pos.netDividendsPaid / pos.costBasis) * 100 : 0;
     const annualDps = annualDpsMap.get(pos.ticker) || 0;
+    const prevAnnualDps = prevAnnualDpsMap.get(pos.ticker) || 0;
     pos.currentYieldPct =
       pos.livePrice > 0 ? (annualDps / pos.livePrice) * 100 : 0;
+    pos.currentYieldYear = currentFiscalYearMap.get(pos.ticker) || 0;
+    pos.prevYieldPct =
+      pos.livePrice > 0 ? (prevAnnualDps / pos.livePrice) * 100 : 0;
+    pos.prevYieldYear = prevFiscalYearMap.get(pos.ticker) || 0;
 
     totalCostBasis += pos.costBasis;
     totalMarketValue += pos.marketValue;
@@ -633,10 +658,13 @@ export function computePortfolioAnalytics(state: PortfolioState) {
     totalCostBasis > 0 ? (totalAllInclusiveReturn / totalCostBasis) * 100 : 0;
 
   let totalProjectedAnnualDividends = 0;
+  let totalPrevAnnualDividends = 0;
   for (const pos of positions) {
     if (pos.shares > 0) {
       const annualDps = annualDpsMap.get(pos.ticker) || 0;
+      const prevAnnualDps = prevAnnualDpsMap.get(pos.ticker) || 0;
       totalProjectedAnnualDividends += pos.shares * annualDps;
+      totalPrevAnnualDividends += pos.shares * prevAnnualDps;
     }
   }
 
@@ -678,6 +706,10 @@ export function computePortfolioAnalytics(state: PortfolioState) {
       portfolioCurrentYieldPct:
         totalMarketValue > 0
           ? (totalProjectedAnnualDividends / totalMarketValue) * 100
+          : 0,
+      portfolioPrevYieldPct:
+        totalMarketValue > 0
+          ? (totalPrevAnnualDividends / totalMarketValue) * 100
           : 0,
       totalBuyCashOutflow,
       totalSellCashInflow: effectiveSellInflow,
